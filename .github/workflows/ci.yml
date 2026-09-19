@@ -1,0 +1,46 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  bash:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: syntax
+        run: bash -n ca
+      - name: shellcheck
+        run: shellcheck --severity=warning ca
+      - name: smoke test
+        run: |
+          export HOME="$(mktemp -d)"
+          mkdir -p "$HOME/bin" && printf '#!/bin/bash\necho ok\n' > "$HOME/bin/claude"
+          chmod +x "$HOME/bin/claude" && export PATH="$HOME/bin:$PATH"
+          ./ca install < /dev/null
+          echo sk-ant-oat01-testtoken | ca add work
+          ca ls | grep -q work
+          ca use work && ca ls | grep -q '^\*'
+          ca vscode > /dev/null && "$HOME/.local/bin/ca-vscode-wrapper" env | grep -q CLAUDE_CODE_OAUTH_TOKEN
+          ca rm work
+
+  powershell:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: parse
+        shell: powershell
+        run: |
+          $e = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile("$PWD\ca-win.ps1", [ref]$null, [ref]$e)
+          if ($e) { $e | ForEach-Object { Write-Error $_.Message }; exit 1 }
+      - name: install and add
+        shell: powershell
+        run: |
+          .\ca-win.ps1 install
+          "sk-ant-oat01-testtoken" | .\ca-win.ps1 add work
+          .\ca-win.ps1 ls
+          .\ca-win.ps1 use work
+          .\ca-win.ps1 rm work

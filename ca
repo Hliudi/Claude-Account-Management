@@ -1,0 +1,353 @@
+#!/usr/bin/env bash
+#
+#   ca — switch between your own Claude subscription accounts, on every machine.
+#
+#   Docs: https://github.com/Hliudi/Claude-Account-Management
+#   MIT licensed. Tokens live in $CA_DIR (default ~/.config/claude-accts), never in this repo.
+#
+set -euo pipefail
+
+CA_DIR="${CA_DIR:-$HOME/.config/claude-accts}"
+BIN_DIR="${CA_BIN_DIR:-$HOME/.local/bin}"
+RESERVED=" install add ls list test rm update push use vscode help "
+
+# --- resolve our own path (macOS ships no readlink -f) --------------------------------------------
+realpath_() {
+  local p="$1" l
+  while [[ -L "$p" ]]; do
+    l="$(readlink "$p")"
+    [[ "$l" == /* ]] && p="$l" || p="$(dirname "$p")/$l"
+  done
+  echo "$(cd "$(dirname "$p")" && pwd -P)/$(basename "$p")"
+}
+SELF="$(realpath_ "${BASH_SOURCE[0]}")"
+SRC_DIR="$(dirname "$SELF")"
+
+# --- look & feel ---------------------------------------------------------------------------------
+if [[ -t 1 && -z "${NO_COLOR:-}" && "${TERM:-dumb}" != dumb ]]; then
+  A=$'\033[38;5;209m'; D=$'\033[2m'; B=$'\033[1m'; G=$'\033[32m'; R=$'\033[31m'; X=$'\033[0m'
+else
+  A=''; D=''; B=''; G=''; R=''; X=''
+fi
+say()  { printf '%s\n' "$*"; }
+note() { printf '%s%s%s\n' "$D" "$*" "$X"; }              # secondary line
+head_() { printf '%s✳%s %s%s%s\n' "$A" "$X" "$B" "$*" "$X"; }
+die()  { printf '%s✗%s %s\n' "$R" "$X" "$*" >&2; exit 1; }
+
+# --- messages (English by default, Chinese when the locale asks for it) ---------------------------
+zh() { [[ "${CA_LANG:-${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}}" == zh* ]]; }
+t() {
+  local k="$1"; shift
+  local en zh
+  case "$k" in
+    installed)    en='Installed %s'; zh='已安装 %s' ;;
+    via_repo)     en='  ↳ runs %s — update with `ca update`'; zh='  ↳ 实际运行 %s，更新用 `ca update`' ;;
+    token_dir)    en='Tokens  %s'; zh='token 目录  %s' ;;
+    path_hint)    en='Open a new terminal (or source your shell rc) to get the `ca` command.'
+                  zh='新开一个终端（或 source 一下 shell 配置）后 ca 命令生效。' ;;
+    no_claude)    en='Claude Code is not installed here yet — install it before running `ca <name>`.'
+                  zh='这台机器还没装 Claude Code，装好后才能用 ca <名>。' ;;
+    add_intro)    en='Add accounts. Generate a token with `claude setup-token`; press Enter to finish.'
+                  zh='添加账号。token 用 `claude setup-token` 生成；直接回车结束。' ;;
+    ask_name)     en='  account name (e.g. work, personal): '; zh='  账号名（如 work、personal）：' ;;
+    have_accs)    en='Existing accounts: %s'; zh='已有账号：%s' ;;
+    paste_token)  en='  paste token for %s (hidden): '; zh='  粘贴 %s 的 token（不回显）：' ;;
+    saved)        en='Saved %s → %s'; zh='已保存 %s → %s' ;;
+    verify_hint)  en='  ↳ verify with `ca test %s`'; zh='  ↳ 验证：`ca test %s`' ;;
+    empty_token)  en='Empty token, nothing saved.'; zh='token 为空，未保存。' ;;
+    odd_token)    en='Heads up: setup-token values normally start with sk-ant-oat. Saved anyway.'
+                  zh='提醒：setup-token 的 token 通常以 sk-ant-oat 开头，这个不是，仍然保存。' ;;
+    bad_chars)    en='Account names take letters, digits, _ and - only: %s'; zh='账号名只能用字母、数字、_、-：%s' ;;
+    reserved)     en='%s is a ca subcommand, pick another name.'; zh='%s 是 ca 的子命令，换一个名字。' ;;
+    no_account)   en='No account %s. Have: %s'; zh='没有账号 %s，现有：%s' ;;
+    none_yet)     en='No accounts yet — run `ca add <name>`.'; zh='还没有账号，运行 `ca add <名>`。' ;;
+    ls_footer)    en='%s* = selected for the VS Code extension (ca use). Tokens last about a year.%s'
+                  zh='%s* = VS Code 扩展选定的账号（ca use）。token 有效期约一年。%s' ;;
+    no_accounts)  en='No accounts yet.'; zh='还没有账号。' ;;
+    no_claude_err) en='Cannot find the claude executable.'; zh='找不到 claude。' ;;
+    removed)      en='Removed %s'; zh='已删除 %s' ;;
+    also_cleared) en='  ↳ it was the selected account, selection cleared'; zh='  ↳ 它是选定的账号，已一并取消' ;;
+    not_git)      en='Not a git checkout, nothing to update: %s'; zh='不是 git clone 安装的，无法更新：%s' ;;
+    push_usage)   en='Usage: ca push <host> [host...]'; zh='用法：ca push <主机> [主机...]' ;;
+    push_notok)   en='No tokens here yet — deploying the script only.'; zh='本机还没有 token，只部署脚本。' ;;
+    push_fail)    en='%s — failed'; zh='%s — 部署失败' ;;
+    cur_is)       en='VS Code extension uses %s'; zh='VS Code 扩展当前用 %s' ;;
+    cur_none)     en='VS Code extension uses the account you logged in with (/login).'
+                  zh='VS Code 扩展用的是 /login 登录的账号。' ;;
+    use_off)      en='Cleared — back to the /login account.'; zh='已取消，改回 /login 登录的账号。' ;;
+    use_set)      en='VS Code extension now uses %s'; zh='VS Code 扩展改用 %s' ;;
+    use_hint)     en='  ↳ start a new chat, or reopen one from the session list; running chats keep their account'
+                  zh='  ↳ 新开会话或从会话列表恢复即生效；正在跑的会话不受影响' ;;
+    no_wrapper)   en='  ↳ wrapper not installed yet — run `ca vscode` first'; zh='  ↳ 还没装 wrapper，先运行 `ca vscode`' ;;
+    wrapper_ok)   en='Wrapper %s'; zh='wrapper 已生成 %s' ;;
+    applied)      en='Configured %s'; zh='已写入 %s' ;;
+    skipped)      en='Skipped %s — it has comments, add the line by hand'; zh='跳过 %s（含注释），请手动添加' ;;
+    reload)       en='Run “Developer: Reload Window” in VS Code once, then switch with `ca use <name>`.'
+                  zh='在 VS Code 里执行一次 “Developer: Reload Window”，之后用 `ca use <名>` 切换。' ;;
+    need_python)  en='--apply needs python3; add the setting by hand instead.'; zh='--apply 需要 python3，请手动添加设置。' ;;
+    settings_hint) en='Add this to your VS Code settings (Preferences: Open User Settings (JSON); use Open Remote Settings (JSON) over Remote-SSH):'
+                  zh='在 VS Code 设置里加这一行（Preferences: Open User Settings (JSON)；Remote-SSH 用 Open Remote Settings (JSON)）：' ;;
+    apply_hint)   en='Or let ca do it: ca vscode --apply'; zh='也可以让 ca 代劳：ca vscode --apply' ;;
+    git_refuse)   en='%s sits inside a git repository — refusing to keep tokens there. Set CA_DIR elsewhere.'
+                  zh='%s 在 git 仓库里，拒绝在这里存 token。请用 CA_DIR 换个位置。' ;;
+  esac
+  if zh; then printf "$zh\n" "$@"; else printf "$en\n" "$@"; fi
+}
+
+# --- helpers -------------------------------------------------------------------------------------
+tok_file() { echo "$CA_DIR/$1.token"; }
+names() { local f; for f in "$CA_DIR"/*.token; do [[ -f "$f" ]] && basename "$f" .token; done; return 0; }
+current() { [[ -f "$CA_DIR/current" ]] && cat "$CA_DIR/current"; return 0; }
+need_acc() { [[ -f "$(tok_file "$1")" ]] || die "$(t no_account "$A$1$X" "$(names | tr '\n' ' ')")"; }
+in_git() { command -v git >/dev/null && git -C "$1" rev-parse --is-inside-work-tree >/dev/null 2>&1; }
+valid_name() {
+  [[ "$1" =~ ^[A-Za-z0-9_-]+$ ]] || die "$(t bad_chars "$1")"
+  [[ "$RESERVED" != *" $1 "* ]] || die "$(t reserved "$1")"
+}
+
+# tokens must never land inside a git repository
+ensure_ca_dir() {
+  local p="$CA_DIR"
+  while [[ ! -d "$p" ]]; do p="$(dirname "$p")"; done
+  in_git "$p" && die "$(t git_refuse "$CA_DIR")"
+  mkdir -p "$CA_DIR"; chmod 700 "$CA_DIR"
+}
+
+# PATH line goes into every rc that exists, plus the login shell's own rc if it does not
+add_path_line() {
+  local rc rcs=() line
+  line="export PATH=\"$BIN_DIR:\$PATH\"  # ca: claude accounts"
+  case "$(basename "${SHELL:-bash}")" in
+    zsh)  rcs+=("$HOME/.zshrc") ;;
+    bash) [[ "$(uname -s)" == Darwin ]] && rcs+=("$HOME/.bash_profile") || rcs+=("$HOME/.bashrc") ;;
+  esac
+  for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.bash_profile"; do [[ -f "$rc" ]] && rcs+=("$rc"); done
+  [[ ${#rcs[@]} -gt 0 ]] || return 0          # bash 3.2: expanding an empty array trips set -u
+  for rc in "${rcs[@]}"; do
+    touch "$rc"
+    grep -q '# ca: claude accounts' "$rc" || printf '\n%s\n' "$line" >> "$rc"
+  done
+  return 0
+}
+
+# --- commands ------------------------------------------------------------------------------------
+cmd_install() {
+  ensure_ca_dir
+  mkdir -p "$BIN_DIR"
+  if [[ "$SELF" != "$BIN_DIR/ca" ]]; then
+    rm -f "$BIN_DIR/ca"
+    if in_git "$SRC_DIR"; then
+      # git checkout: a forwarder, so `git pull` updates every machine (symlinks degrade to copies in Git Bash)
+      printf '#!/usr/bin/env bash\n# generated by `ca install` — forwards to the git checkout\nexec bash %q "$@"\n' "$SELF" > "$BIN_DIR/ca"
+      chmod 755 "$BIN_DIR/ca"
+      head_ "$(t installed "$BIN_DIR/ca")"; note "$(t via_repo "$SELF")"
+    else
+      cp "$SELF" "$BIN_DIR/ca"; chmod 755 "$BIN_DIR/ca"
+      head_ "$(t installed "$BIN_DIR/ca")"
+    fi
+  fi
+  add_path_line
+  note "$(t token_dir "$CA_DIR")"
+  command -v claude >/dev/null || note "$(t no_claude)"
+
+  if [[ -t 0 && -t 1 ]]; then
+    local n
+    [[ -z "$(names)" ]] || note "$(t have_accs "$(names | tr '\n' ' ')")"
+    say; head_ "$(t add_intro)"
+    while read -rp "$(t ask_name)" n && [[ -n "$n" ]]; do ( cmd_add "$n" ) || true; done
+  fi
+  [[ ":$PATH:" == *":$BIN_DIR:"* ]] || note "$(t path_hint)"
+  return 0
+}
+
+cmd_add() {
+  local n="${1:-}" t_
+  [[ -n "$n" ]] || die 'usage: ca add <name>'
+  valid_name "$n"
+  ensure_ca_dir
+  if [[ -t 0 ]]; then read -rsp "$(t paste_token "$A$n$X")" t_; echo; else read -r t_ || true; fi
+  t_="$(printf '%s' "$t_" | tr -d '[:space:]')"
+  [[ -n "$t_" ]] || die "$(t empty_token)"
+  [[ "$t_" == sk-ant-oat* ]] || note "$(t odd_token)"
+  (umask 077; printf '%s\n' "$t_" > "$(tok_file "$n")")
+  say "$(printf '%s✓%s %s' "$G" "$X" "$(t saved "$A$n$X" "$(tok_file "$n")")")"
+  note "$(t verify_hint "$n")"
+}
+
+cmd_ls() {
+  local n f cur mark
+  [[ -n "$(names)" ]] || { note "$(t none_yet)"; return 0; }
+  cur="$(current)"
+  for n in $(names); do
+    f="$(tok_file "$n")"
+    if [[ "$n" == "$cur" ]]; then mark="$A*$X "; else mark='  '; fi
+    printf '%s%s%-14s%s %s…%s%s  %s%s%s\n' "$mark" "$B" "$n" "$X" \
+      "$D" "$(tail -c 7 "$f" | tr -d '\n')" "$X" \
+      "$D" "$(date -r "$f" +%F 2>/dev/null || stat -f %Sm -t %F "$f")" "$X"
+  done
+  t ls_footer "$D" "$X"
+}
+
+cmd_test() {
+  local n out to=""
+  # shellcheck disable=SC2046  # names() prints one account per line; splitting is the point
+  [[ $# -gt 0 ]] || set -- $(names)
+  [[ $# -gt 0 ]] || die "$(t no_accounts)"
+  command -v claude >/dev/null || die "$(t no_claude_err)"
+  command -v timeout >/dev/null && to="timeout 90"
+  local bad=0
+  for n in "$@"; do
+    need_acc "$n"
+    out="$(CLAUDE_CODE_OAUTH_TOKEN="$(cat "$(tok_file "$n")")" $to claude -p "reply with the single word ok" --max-turns 1 </dev/null 2>&1 || true)"
+    if grep -qiE 'api error|failed to authenticate|invalid|limit' <<<"$out" || ! grep -qi 'ok' <<<"$out"; then
+      printf '%s✗%s %s%-14s%s %s\n' "$R" "$X" "$B" "$n" "$X" "$(grep -iE 'error|fail|invalid|limit' <<<"$out" | head -1 || true)"
+      bad=1
+    else
+      printf '%s✓%s %s%-14s%s\n' "$G" "$X" "$B" "$n" "$X"
+    fi
+  done
+  return $bad
+}
+
+cmd_rm() {
+  local n="${1:-}"
+  [[ -n "$n" ]] || die 'usage: ca rm <name>'
+  need_acc "$n"
+  rm -f "$(tok_file "$n")"
+  say "$(t removed "$n")"
+  [[ "$(current)" != "$n" ]] || { rm -f "$CA_DIR/current"; note "$(t also_cleared)"; }
+}
+
+cmd_update() {
+  in_git "$SRC_DIR" || die "$(t not_git "$SRC_DIR")"
+  git -C "$SRC_DIR" pull --ff-only
+}
+
+cmd_push() {
+  [[ $# -gt 0 ]] || die "$(t push_usage)"
+  [[ -n "$(names)" ]] || note "$(t push_notok)"
+  local h stage
+  stage="$(mktemp -d)"; trap 'rm -rf "$stage"' RETURN
+  chmod 700 "$stage"; mkdir -p "$stage/tokens"
+  cp "$SELF" "$stage/ca"
+  cp "$CA_DIR"/*.token "$stage/tokens/" 2>/dev/null || true
+  for h in "$@"; do
+    # straight through ssh: tokens never touch a third party
+    if tar -C "$stage" -cf - . \
+      | ssh "$h" 'set -e; d=$(mktemp -d); trap "rm -rf $d" EXIT; tar -C "$d" -xf -;
+                  mkdir -p ~/.config/claude-accts; chmod 700 ~/.config/claude-accts;
+                  for f in "$d"/tokens/*.token; do if [ -f "$f" ]; then install -m 600 "$f" ~/.config/claude-accts/; fi; done;
+                  bash "$d/ca" install </dev/null' > /dev/null
+    then printf '%s✓%s %s\n' "$G" "$X" "$h"
+    else printf '%s✗%s %s\n' "$R" "$X" "$(t push_fail "$h")" >&2
+    fi
+  done
+}
+
+cmd_use() {
+  local n="${1:-}"
+  if [[ -z "$n" ]]; then
+    n="$(current)"
+    [[ -n "$n" ]] && say "$(t cur_is "$A$n$X")" || note "$(t cur_none)"
+    return 0
+  fi
+  if [[ "$n" == --off ]]; then rm -f "$CA_DIR/current"; say "$(t use_off)"; return 0; fi
+  need_acc "$n"
+  (umask 077; echo "$n" > "$CA_DIR/current")
+  say "$(printf '%s✓%s %s' "$G" "$X" "$(t use_set "$A$n$X")")"
+  note "$(t use_hint)"
+  [[ -x "$BIN_DIR/ca-vscode-wrapper" ]] || note "$(t no_wrapper)"
+}
+
+# The extension launches `<claudeProcessWrapper> <claude> <args...>`, so the wrapper only has to
+# export the selected token and exec the rest. No selection = plain passthrough.
+vscode_settings_files() {
+  local f
+  for f in "$HOME/.vscode-server/data/Machine/settings.json" \
+           "$HOME/.config/Code/User/settings.json" \
+           "$HOME/Library/Application Support/Code/User/settings.json"; do
+    [[ -d "$(dirname "$f")" ]] && echo "$f"
+  done
+  return 0
+}
+
+VSCODE_SET_PY='
+import json, os, sys
+f, w = sys.argv[1], sys.argv[2]
+d = {}
+if os.path.exists(f) and open(f).read().strip():
+    try: d = json.load(open(f))
+    except ValueError: sys.exit(2)          # JSONC: leave the file alone
+d["claudeCode.claudeProcessWrapper"] = w
+with open(f, "w") as o: json.dump(d, o, indent=4, ensure_ascii=False); o.write("\n")
+'
+
+cmd_vscode() {
+  local w="$BIN_DIR/ca-vscode-wrapper" f applied=0
+  mkdir -p "$BIN_DIR"
+  {
+    echo '#!/usr/bin/env bash'
+    echo '# generated by `ca vscode` — injects the token selected with `ca use`, then runs claude'
+    printf 'd=%q\n' "$CA_DIR"
+    echo 'if [ -f "$d/current" ]; then n="$(cat "$d/current")"; [ -f "$d/$n.token" ] && export CLAUDE_CODE_OAUTH_TOKEN="$(cat "$d/$n.token")"; fi'
+    echo 'exec "$@"'
+  } > "$w"
+  chmod 755 "$w"
+  head_ "$(t wrapper_ok "$w")"
+  if [[ "${1:-}" == --apply ]]; then
+    command -v python3 >/dev/null || die "$(t need_python)"
+    while IFS= read -r f; do
+      [[ -n "$f" ]] || continue
+      if python3 -c "$VSCODE_SET_PY" "$f" "$w"; then
+        printf '%s✓%s %s\n' "$G" "$X" "$(t applied "$f")"; applied=1
+      else
+        note "$(t skipped "$f")"
+      fi
+    done < <(vscode_settings_files)
+    if [[ $applied == 1 ]]; then note "$(t reload)"; return 0; fi
+  fi
+  say
+  note "$(t settings_hint)"
+  printf '    %s"claudeCode.claudeProcessWrapper"%s: "%s"\n' "$A" "$X" "$w"
+  say
+  note "$(t apply_hint)"
+}
+
+cmd_run() {
+  local n="$1"; shift
+  need_acc "$n"
+  command -v claude >/dev/null || die "$(t no_claude_err)"
+  CLAUDE_CODE_OAUTH_TOKEN="$(cat "$(tok_file "$n")")" exec claude "$@"
+}
+
+usage() {
+  local cur; cur="$(current)"
+  printf '%s✳%s %sca%s — switch between your own Claude subscription accounts\n\n' "$A" "$X" "$B" "$X"
+  printf '  %sca <name>%s [claude args]   run Claude Code as that account, e.g. ca work --continue\n' "$B" "$X"
+  printf '  %sca install%s                install the command, then add accounts interactively\n' "$B" "$X"
+  printf '  %sca add%s <name>             store a token from `claude setup-token`\n' "$B" "$X"
+  printf '  %sca ls%s                     list accounts\n' "$B" "$X"
+  printf '  %sca test%s [name...]         check the tokens with one real call\n' "$B" "$X"
+  printf '  %sca rm%s <name>              forget an account\n' "$B" "$X"
+  printf '  %sca use%s [name|--off]       pick the account the VS Code extension uses\n' "$B" "$X"
+  printf '  %sca vscode%s [--apply]       set up the VS Code wrapper\n' "$B" "$X"
+  printf '  %sca push%s <host>...         deploy script + tokens to other machines over ssh\n' "$B" "$X"
+  printf '  %sca update%s                 git pull this checkout\n\n' "$B" "$X"
+  note "tokens: $CA_DIR${cur:+   |   vscode: $cur}"
+  note 'docs: https://github.com/Hliudi/Claude-Account-Management'
+}
+
+case "${1:-}" in
+  ""|-h|--help|help) usage ;;
+  install) shift; cmd_install "$@" ;;
+  add)     shift; cmd_add "$@" ;;
+  ls|list) cmd_ls ;;
+  test)    shift; cmd_test "$@" ;;
+  rm)      shift; cmd_rm "$@" ;;
+  update)  cmd_update ;;
+  push)    shift; cmd_push "$@" ;;
+  use)     shift; cmd_use "$@" ;;
+  vscode)  shift; cmd_vscode "$@" ;;
+  -*)      die "unknown option $1 — run \`ca help\`" ;;
+  *)       cmd_run "$@" ;;
+esac
