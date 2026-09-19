@@ -356,7 +356,8 @@ bar() {   # $1 = percent
 cmd_usage() {
   local n line kind pct when
   command -v curl >/dev/null && command -v python3 >/dev/null || die "$(t usage_need)"
-  [[ $# -gt 0 ]] || set -- $(names)      # shellcheck disable=SC2046
+  # shellcheck disable=SC2046  # names() prints one account per line; splitting is the point
+  [[ $# -gt 0 ]] || set -- $(names)
   [[ $# -gt 0 ]] || die "$(t no_accounts)"
   for n in "$@"; do
     need_acc "$n"
