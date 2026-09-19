@@ -1,8 +1,18 @@
+<div align="center">
+
 # ca
 
-Switch between your own Claude subscription accounts — in the terminal and in the VS Code extension, on every machine you work on.
+**Switch between your own Claude subscription accounts — terminal and VS Code, on every machine.**
 
-[中文说明](README.zh-CN.md)
+[![ci](https://github.com/Hliudi/Claude-Account-Management/actions/workflows/ci.yml/badge.svg)](https://github.com/Hliudi/Claude-Account-Management/actions/workflows/ci.yml)
+[![license](https://img.shields.io/badge/license-MIT-black)](LICENSE)
+[![platform](https://img.shields.io/badge/platform-linux%20%C2%B7%20macOS%20%C2%B7%20windows-black)](#platforms)
+
+[Quickstart](#quickstart) · [Commands](#commands) · [VS Code](#vs-code-extension) · [Troubleshooting](#troubleshooting) · [For agents](AGENTS.md) · [中文](README.zh-CN.md)
+
+</div>
+
+---
 
 ```console
 $ ca ls
@@ -12,24 +22,54 @@ $ ca ls
 $ ca research --continue      # weekly limit hit on `work`? same conversation, other account
 ```
 
-Conversation history lives in `~/.claude/` on your machine, not in the account, so `--continue` and `--resume` carry straight over.
+Conversation history lives in `~/.claude/` on the machine, not in the account, so `--continue` and `--resume` carry straight over to the other account.
 
-- Official `claude setup-token` credentials. No proxy, no gateway, nothing between you and Anthropic.
-- `ca <name>` exports the token for that one command. Plain `claude` still uses the account you logged in with.
-- Tokens stay in `~/.config/claude-accts`, mode 600, outside this repo. `ca` refuses to keep them inside a git checkout.
+- **Official credentials only.** Tokens come from `claude setup-token`. No proxy, no gateway, nothing between you and Anthropic.
+- **Scoped to one command.** `ca <name>` exports the token for that invocation; plain `claude` still uses the account you logged in with.
+- **Tokens stay put.** `~/.config/claude-accts`, mode 600, outside the repo — and `ca` refuses to store them inside a git checkout.
 
-> For accounts **you own**, switched by hand. Sharing accounts or pooling them behind an automatic router breaks the Anthropic usage terms.
+> [!IMPORTANT]
+> For accounts **you own**, switched by hand. Sharing accounts, or pooling them behind an automatic router, breaks the Anthropic usage terms.
 
-## Install
+## Quickstart
 
 ```bash
+# 1. install (every machine)
 git clone https://github.com/Hliudi/Claude-Account-Management.git ~/.claude-accts
-~/.claude-accts/ca install          # Windows: double-click install.cmd
+~/.claude-accts/ca install            # Windows: double-click install.cmd
+
+# 2. one token per account, on any machine with a browser
+claude setup-token                    # log in as account A, copy the token
+claude setup-token                    # log in as account B
+
+# 3. store them (input is hidden) and check they work
+ca add work
+ca add research
+ca test
 ```
 
-The installer puts `ca` on your `PATH`, then asks for each account's token (input stays hidden). Get a token by running `claude setup-token` once per account, on any machine with a browser; it lasts about a year.
+`ca install` puts `ca` on your `PATH`, creates the token directory, and — in an interactive terminal — walks you through step 3 right away. Tokens last about a year.
 
-`ca update` pulls the latest version — everything installed from a checkout runs the checkout.
+Already set up elsewhere? Copy everything over ssh instead: `ca push user@host-a host-b`.
+
+## Commands
+
+| Command | What it does |
+| --- | --- |
+| `ca <name> [args…]` | Run Claude Code as that account; args pass through to `claude` |
+| `ca install` | Install the command, then add accounts interactively |
+| `ca add <name>` | Store a token (hidden input, or piped on stdin) |
+| `ca ls` | List accounts, masked tokens, and the selected one |
+| `ca test [name…]` | One real call per account to verify the tokens |
+| `ca rm <name>` | Forget an account |
+| `ca use [name\|--off]` | Pick the account the VS Code extension uses |
+| `ca vscode [--apply]` | Set up the VS Code wrapper |
+| `ca push <host>…` | Deploy script + tokens to other machines over ssh |
+| `ca update` | `git pull` this checkout — every machine installed from it follows |
+
+Account names are yours to pick: letters, digits, `_`, `-`, as long as they aren't subcommands.
+
+## Platforms
 
 | Platform | Build | Install |
 | --- | --- | --- |
@@ -38,47 +78,50 @@ The installer puts `ca` on your `PATH`, then asks for each account's token (inpu
 | Windows | `ca-win.ps1` (PowerShell 5.1 / 7) | double-click `install.cmd` |
 | Windows + Git Bash | `ca` (bash) | `./ca install` |
 
-Both builds share the same token directory, so a Windows box can use either.
-
-## Use
-
-```bash
-ca work                  # start Claude Code as `work`
-ca research --continue   # resume the last conversation as `research`
-ca ls                    # accounts, masked tokens, selected account
-ca test                  # one real call per account, to check the tokens
-ca add <name>            # store another token
-ca rm <name>             # forget one
-ca push host-a host-b    # copy script + tokens to other machines over ssh
-```
-
-Names are yours to pick (letters, digits, `_`, `-`) as long as they aren't subcommands. Anything after the name goes to `claude` untouched.
+Both builds share one token directory, so either works on a Windows box.
 
 ## VS Code extension
 
-The extension spawns Claude itself, so it reads a selected account instead of an environment variable you type.
+The extension spawns Claude itself, so it follows a *selected* account rather than an environment variable you type in a terminal.
 
-**Linux, macOS, Remote-SSH** — one-time setup, then switch freely:
+**Linux · macOS · Remote-SSH** — one-time setup, then switch freely:
 
 ```bash
-ca vscode --apply        # installs a wrapper and points claudeCode.claudeProcessWrapper at it
-                         # then run "Developer: Reload Window" once
-ca use research          # new chats (and reopened ones) use `research`; running chats keep theirs
-ca use --off             # back to the /login account
+ca vscode --apply     # installs a wrapper, points claudeCode.claudeProcessWrapper at it
+                      # then run "Developer: Reload Window" once
+ca use research       # new and reopened chats use `research`; running chats keep theirs
+ca use --off          # back to the /login account
 ```
 
-Over Remote-SSH, run it on the remote machine: it writes `~/.vscode-server/data/Machine/settings.json`. If a settings file has comments, `ca` leaves it alone and prints the line to paste.
+Over Remote-SSH, run it on the remote machine — it writes `~/.vscode-server/data/Machine/settings.json`. When a settings file contains comments, `ca` leaves it untouched and prints the line to paste.
 
-**Windows** — the extension can't run a `.cmd` wrapper, so `ca use <name>` sets the user-level `CLAUDE_CODE_OAUTH_TOKEN` instead. Quit VS Code completely and reopen it; new terminals pick the account up too.
+**Windows** — the extension can't launch a `.cmd` wrapper, so `ca use <name>` sets the user-level `CLAUDE_CODE_OAUTH_TOKEN` instead. Quit VS Code completely and reopen it; new terminals pick the account up too.
 
-## Good to know
+## Troubleshooting
 
-- Usage and limits are counted per account by the server, so `/usage` reflects the account you switched to. The email shown by `claude auth status` still comes from the local `/login` credentials.
-- The first turn after a switch re-reads the whole context (prompt caching is per account). Switch at a natural break in long conversations.
+| Symptom | Cause and fix |
+| --- | --- |
+| `ca: command not found` right after installing | The `PATH` line lands in your shell rc — open a new terminal, or `source ~/.zshrc` |
+| `ca test` shows `401 OAuth access token is invalid` | Token expired or revoked: `claude setup-token` again, then `ca add <name>` |
+| VS Code still uses the old account | New chat needed (Linux/macOS), or a full quit and reopen (Windows). `ca ls` shows which is selected with `*` |
+| `ca vscode --apply` skipped my settings file | It has comments — paste the printed line into `Preferences: Open User Settings (JSON)` yourself |
+| `refusing to keep tokens there` | `CA_DIR` points inside a git repository. Leave it at the default or set it elsewhere |
+| First reply after switching is slow or costly | Prompt caching is per account, so the context is re-read once. Switch between tasks, not mid-thread |
+
+## Reference
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `CA_DIR` | `~/.config/claude-accts` | Where tokens and the selection live |
+| `CA_BIN_DIR` | `~/.local/bin` (Windows: `%LOCALAPPDATA%\claude-accts\bin`) | Where the command is installed |
+| `CA_LANG` | system locale | `zh` or `en` to force the output language |
+| `NO_COLOR` | unset | Any value disables colored output |
+
+Worth knowing:
+
+- Usage and limits are counted per account on the server, so `/usage` reflects the account you switched to. The email from `claude auth status` still comes from the local `/login` credentials.
 - `--continue` resumes conversations from *that* machine; history doesn't travel between machines.
-- A `setup-token` credential may not carry claude.ai connector permissions. Run `/login` on that machine if something is missing.
-- Output follows `NO_COLOR`, and speaks Chinese when your locale does (`CA_LANG=zh` or `CA_LANG=en` to force).
-- `CA_DIR` and `CA_BIN_DIR` override where tokens and the command go.
+- A `setup-token` credential may lack claude.ai connector permissions — run `/login` on that machine if something is missing.
 
 ## License
 
