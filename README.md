@@ -60,6 +60,7 @@ Already set up elsewhere? Copy everything over ssh instead: `ca push user@host-a
 | `ca install` | Install the command, then add accounts interactively |
 | `ca add <name>` | Store a token (hidden input, or piped on stdin) |
 | `ca ls` | List accounts, masked tokens, and the selected one |
+| `ca who` | Which account this session is spending — works inside a running session too |
 | `ca test [name…]` | One real call per account to verify the tokens |
 | `ca rm <name>` | Forget an account |
 | `ca use [name\|--off]` | Pick the account the VS Code extension uses |
@@ -119,7 +120,8 @@ Over Remote-SSH, run it on the remote machine — it writes `~/.vscode-server/da
 
 Worth knowing:
 
-- Usage and limits are counted per account on the server, so `/usage` reflects the account you switched to. The email from `claude auth status` still comes from the local `/login` credentials.
+- **Which account am I on?** `ca who`. Inside a running Claude session, ask it to run `ca who` — `ca` exports `CA_ACCOUNT`, which the session inherits. The terminal tab is renamed too.
+- **`/usage` shows no limit bars after switching.** Expected: a `setup-token` credential carries no subscription info, so the client falls back to a local cost summary. The limits still apply, counted per account on the server — check them on claude.ai while logged in as that account.
 - `--continue` resumes conversations from *that* machine; history doesn't travel between machines.
 - A `setup-token` credential may lack claude.ai connector permissions — run `/login` on that machine if something is missing.
 

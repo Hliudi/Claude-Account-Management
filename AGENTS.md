@@ -45,6 +45,14 @@ ca test            # one real API call per account; ✓ means the token works
 
 A `401 OAuth access token is invalid` means the token is expired or was mistyped — the human regenerates it with `claude setup-token`.
 
+## Which account is in use
+
+```bash
+ca who      # this shell / session, plus the account selected for VS Code
+```
+
+`ca <name>` exports `CA_ACCOUNT`, so `ca who` also answers correctly from inside a running Claude session. Note that `/usage` cannot show subscription limit bars under a `setup-token` credential — that is expected, not a misconfiguration.
+
 ## Everyday use
 
 ```bash

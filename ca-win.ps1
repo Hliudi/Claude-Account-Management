@@ -5,7 +5,6 @@
 #   Works on Windows PowerShell 5.1 and PowerShell 7. Install: double-click install.cmd.
 #   Tokens live in %USERPROFILE%\.config\claude-accts and are readable by you only.
 #
-$PipeInput = @($input | ForEach-Object { "$_" })
 $ErrorActionPreference = 'Stop'
 try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } catch {}
 
@@ -16,7 +15,7 @@ $BinDir = if ($env:CA_BIN_DIR) { $env:CA_BIN_DIR }
           else { Join-Path (Join-Path $HOME '.local') 'bin' }
 $Self     = $PSCommandPath
 $SrcDir   = Split-Path -Parent $Self
-$Reserved = @('install','add','ls','list','test','rm','update','push','use','vscode','help')
+$Reserved = @('install','add','ls','list','test','rm','update','push','use','vscode','who','whoami','help')
 
 # --- look & feel ---------------------------------------------------------------------------------
 $Color = (-not $env:NO_COLOR) -and $Host.UI.SupportsVirtualTerminal -ne $false
@@ -78,6 +77,9 @@ $Msg = @{
                    'Windows 版不支持 push；在目标机器上 clone 本仓库，或在 WSL / Git Bash 里用 bash 版。')
   vscode_win   = @('Nothing to configure on Windows: pick an account with `ca use <name>`, then quit VS Code completely and reopen it.',
                    'Windows 上不需要额外设置：用 `ca use <名>` 选账号，然后完全退出并重开 VS Code。')
+  who_shell    = @('This session runs as {0}',            '当前会话用的是 {0}')
+  who_login    = @('This shell uses the /login account {0}', '当前 shell 用的是 /login 的账号 {0}')
+  who_vscode   = @('  ↳ default account is {0}',          '  ↳ 默认账号是 {0}')
   path_added   = @('Added {0} to your user PATH.',  '已把 {0} 加入用户 PATH。')
   git_refuse   = @('{0} sits inside a git repository — refusing to keep tokens there. Set CA_DIR elsewhere.',
                    '{0} 在 git 仓库里，拒绝在这里存 token。请用 CA_DIR 换个位置。')
@@ -139,12 +141,12 @@ function Set-UserToken([string]$value) {
 }
 
 # --- commands ------------------------------------------------------------------------------------
-function Cmd-Add([string]$n) {
+function Cmd-Add([string]$n, [string[]]$piped) {
   if (-not $n) { Die 'usage: ca add <name>' }
   Test-Name $n
   Ensure-CaDir
-  if ($PipeInput.Count -gt 0) {
-    $t = $PipeInput[0]
+  if ($piped -and $piped.Count -gt 0) {
+    $t = $piped[0]
   } elseif ([Console]::IsInputRedirected) {
     $t = [Console]::In.ReadLine()
   } else {
@@ -220,14 +222,35 @@ function Cmd-Use([string]$n) {
   if ($n -eq '--off') {
     if (Test-Path -LiteralPath $f) { Remove-Item -LiteralPath $f -Force }
     Set-UserToken $null
+    if ($OnWindows) { [Environment]::SetEnvironmentVariable('CA_ACCOUNT', $null, 'User') }
     Say (T use_off)
     return
   }
   Need-Acc $n
   [IO.File]::WriteAllText($f, "$n`n", (New-Object System.Text.UTF8Encoding $false))
   Set-UserToken (Get-Token $n)
+  if ($OnWindows) { [Environment]::SetEnvironmentVariable('CA_ACCOUNT', $n, 'User') }
   Ok (T use_set "$A$n$X")
   Note (T use_hint)
+}
+
+# `ca who` answers "whose quota am I spending?", also from inside a running session:
+# CA_ACCOUNT is inherited by Claude Code and by the shell it runs commands in.
+function Cmd-Who {
+  if ($env:CA_ACCOUNT) {
+    Say "$A●$X $(T who_shell "$B$($env:CA_ACCOUNT)$X")"
+  } else {
+    $email = ''
+    if (Get-Command claude -ErrorAction SilentlyContinue) {
+      $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+      try { $j = (& claude auth status --json 2>$null | Out-String); if ($j) { $email = ($j | ConvertFrom-Json).email } } catch { }
+      finally { $ErrorActionPreference = $old }
+    }
+    if (-not $email) { $email = '/login' }
+    Say "$A●$X $(T who_login "$B$email$X")"
+  }
+  $cur = Get-Current
+  if ($cur) { Note (T who_vscode $cur) }
 }
 
 function Cmd-Update {
@@ -272,7 +295,7 @@ function Cmd-Install {
   Note (T token_dir $CaDir)
   if (-not (Get-Command claude -ErrorAction SilentlyContinue)) { Note (T no_claude) }
 
-  if (-not [Console]::IsInputRedirected -and $PipeInput.Count -eq 0) {
+  if (-not [Console]::IsInputRedirected -and -not $MyInvocation.ExpectingInput) {
     $ns = Get-Names
     if ($ns.Count -gt 0) { Note (T have_accs ($ns -join ' ')) }
     Say ''
@@ -295,6 +318,7 @@ function Show-Usage {
   Write-Output "  ${B}ca ls$X                     list accounts"
   Write-Output "  ${B}ca test$X [name...]         check the tokens with one real call"
   Write-Output "  ${B}ca rm$X <name>              forget an account"
+  Write-Output "  ${B}ca who$X                    show which account this session is spending"
   Write-Output "  ${B}ca use$X [name|--off]       set the default account (VS Code, new terminals)"
   Write-Output "  ${B}ca update$X                 git pull this checkout`n"
   Note ("tokens: $CaDir" + $(if ($cur) { "   |   default: $cur" } else { '' }))
@@ -307,11 +331,18 @@ $rest = if ($args.Count -gt 1) { @($args[1..($args.Count - 1)]) } else { @() }
 switch -Exact ($sub) {
   { $_ -in @('', '-h', '--help', 'help') } { Show-Usage; exit 0 }
   'install' { Cmd-Install; exit 0 }
-  'add'     { Cmd-Add ([string]($rest | Select-Object -First 1)); exit 0 }
+  'add'     {
+    # $MyInvocation.ExpectingInput tells us a pipeline is attached; only then may we read it,
+    # because enumerating $input blocks until stdin closes — which never happens in a terminal.
+    $piped = if ($MyInvocation.ExpectingInput) { @($input | ForEach-Object { "$_" }) } else { @() }
+    Cmd-Add ([string]($rest | Select-Object -First 1)) $piped
+    exit 0
+  }
   { $_ -in @('ls', 'list') } { Cmd-Ls; exit 0 }
   'test'    { Cmd-Test ([string[]]$rest) }
   'rm'      { Cmd-Rm ([string]($rest | Select-Object -First 1)); exit 0 }
   'use'     { Cmd-Use ([string]($rest | Select-Object -First 1)); exit 0 }
+  { $_ -in @('who','whoami') } { Cmd-Who; exit 0 }
   'update'  { Cmd-Update }
   'vscode'  { Note (T vscode_win); exit 0 }
   'push'    { Die (T no_push) }
@@ -320,9 +351,15 @@ switch -Exact ($sub) {
     if (-not (Get-Command claude -ErrorAction SilentlyContinue)) { Die (T no_claude_err) }
     # the token lives in this process only and is restored afterwards
     $old = $env:CLAUDE_CODE_OAUTH_TOKEN
+    $oldAcc = $env:CA_ACCOUNT
     $env:CLAUDE_CODE_OAUTH_TOKEN = Get-Token $sub
+    $env:CA_ACCOUNT = $sub
+    try { $Host.UI.RawUI.WindowTitle = "claude · $sub" } catch { }
     try { & claude @rest }
-    finally { if ($null -eq $old) { Remove-Item Env:CLAUDE_CODE_OAUTH_TOKEN -ErrorAction SilentlyContinue } else { $env:CLAUDE_CODE_OAUTH_TOKEN = $old } }
+    finally {
+      if ($null -eq $old) { Remove-Item Env:CLAUDE_CODE_OAUTH_TOKEN -ErrorAction SilentlyContinue } else { $env:CLAUDE_CODE_OAUTH_TOKEN = $old }
+      if ($null -eq $oldAcc) { Remove-Item Env:CA_ACCOUNT -ErrorAction SilentlyContinue } else { $env:CA_ACCOUNT = $oldAcc }
+    }
     exit $LASTEXITCODE
   }
 }
