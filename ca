@@ -88,6 +88,9 @@ t() {
     settings_hint) en='Add this to your VS Code settings (Preferences: Open User Settings (JSON); use Open Remote Settings (JSON) over Remote-SSH):'
                   zh='在 VS Code 设置里加这一行（Preferences: Open User Settings (JSON)；Remote-SSH 用 Open Remote Settings (JSON)）：' ;;
     apply_hint)   en='Or let ca do it: ca vscode --apply'; zh='也可以让 ca 代劳：ca vscode --apply' ;;
+    cont_head)    en='%s will continue this conversation:'; zh='%s 将接着这个会话：' ;;
+    cont_ago)     en='  last active %s'; zh='  最后活动于 %s' ;;
+    cont_ask)     en='Enter to continue · Ctrl-C to cancel'; zh='回车继续 · Ctrl-C 取消' ;;
     who_shell)    en='This session runs as %s'; zh='当前会话用的是 %s' ;;
     who_login)    en='This shell uses the /login account %s'; zh='当前 shell 用的是 /login 的账号 %s' ;;
     who_vscode)   en='  ↳ VS Code extension uses %s'; zh='  ↳ VS Code 扩展用的是 %s' ;;
@@ -336,9 +339,49 @@ print(d.get("email") or "")' 2>/dev/null || true)"
   [[ -z "$cur" ]] || note "$(t who_vscode "$cur")"
 }
 
+# --continue is otherwise a blind jump: show which conversation is about to be resumed.
+# Session files are Claude Code's own: ~/.claude/projects/<cwd with / as ->/<uuid>.jsonl
+PREVIEW_PY='
+import json, os, sys, time
+d = sys.argv[1]
+files = [os.path.join(d, f) for f in os.listdir(d) if f.endswith(".jsonl")]
+if not files: raise SystemExit(1)
+f = max(files, key=os.path.getmtime)
+title = prompt = ""
+for line in open(f, encoding="utf-8", errors="replace"):
+    if "aiTitle" not in line and "lastPrompt" not in line: continue
+    try: e = json.loads(line)
+    except ValueError: continue
+    title = e.get("aiTitle") or title
+    prompt = e.get("lastPrompt") or prompt
+age = int(time.time() - os.path.getmtime(f))
+unit = ("%ds" % age) if age < 60 else ("%dm" % (age // 60)) if age < 3600 else ("%dh" % (age // 3600)) if age < 86400 else ("%dd" % (age // 86400))
+print(title.strip() or os.path.basename(f)[:8])
+print(unit)
+print(" ".join(prompt.split())[:70])
+'
+
+preview_continue() {
+  local n="$1" dir out title ago prompt
+  command -v python3 >/dev/null || return 0
+  dir="$HOME/.claude/projects/$(pwd -P | tr '/.' '--')"
+  [[ -d "$dir" ]] || return 0
+  out="$(python3 -c "$PREVIEW_PY" "$dir" 2>/dev/null)" || return 0
+  title="$(sed -n 1p <<<"$out")"; ago="$(sed -n 2p <<<"$out")"; prompt="$(sed -n 3p <<<"$out")"
+  head_ "$(t cont_head "$A$n$X")"
+  printf '  %s%s%s\n' "$B" "$title" "$X"
+  note "$(t cont_ago "$ago")"
+  [[ -z "$prompt" ]] || note "  \"$prompt\""
+  if [[ -t 0 && -t 1 && -z "${CA_YES:-}" ]]; then read -rsp "$(printf '%s%s%s' "$D" "$(t cont_ask)" "$X")"; echo; fi
+  return 0
+}
+
 cmd_run() {
-  local n="$1"; shift
+  local n="$1" a; shift
   need_acc "$n"
+  for a in "$@"; do
+    if [[ "$a" == --continue || "$a" == -c ]]; then preview_continue "$n"; break; fi
+  done
   command -v claude >/dev/null || die "$(t no_claude_err)"
   # name the terminal tab, so a glance tells you which account the session is spending
   [[ -t 1 ]] && printf '\033]0;claude · %s\007' "$n"

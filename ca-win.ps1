@@ -77,6 +77,9 @@ $Msg = @{
                    'Windows 版不支持 push；在目标机器上 clone 本仓库，或在 WSL / Git Bash 里用 bash 版。')
   vscode_win   = @('Nothing to configure on Windows: pick an account with `ca use <name>`, then quit VS Code completely and reopen it.',
                    'Windows 上不需要额外设置：用 `ca use <名>` 选账号，然后完全退出并重开 VS Code。')
+  cont_head    = @('{0} will continue this conversation:', '{0} 将接着这个会话：')
+  cont_ago     = @('  last active {0}',              '  最后活动于 {0}')
+  cont_ask     = @('Enter to continue · Ctrl-C to cancel', '回车继续 · Ctrl-C 取消')
   who_shell    = @('This session runs as {0}',            '当前会话用的是 {0}')
   who_login    = @('This shell uses the /login account {0}', '当前 shell 用的是 /login 的账号 {0}')
   who_vscode   = @('  ↳ default account is {0}',          '  ↳ 默认账号是 {0}')
@@ -236,6 +239,34 @@ function Cmd-Use([string]$n) {
 
 # `ca who` answers "whose quota am I spending?", also from inside a running session:
 # CA_ACCOUNT is inherited by Claude Code and by the shell it runs commands in.
+# --continue is otherwise a blind jump: show which conversation is about to be resumed.
+# Session files are Claude Code's own: ~/.claude/projects/<cwd with separators as ->/<uuid>.jsonl
+function Show-ContinuePreview([string]$n) {
+  $dir = Join-Path (Join-Path (Join-Path $HOME '.claude') 'projects') (((Get-Location).Path -replace '[\\/:.]', '-'))
+  if (-not (Test-Path -LiteralPath $dir)) { return }
+  $f = Get-ChildItem -LiteralPath $dir -Filter '*.jsonl' -File -ErrorAction SilentlyContinue |
+       Sort-Object LastWriteTime -Descending | Select-Object -First 1
+  if (-not $f) { return }
+  $title = ''; $prompt = ''
+  foreach ($line in [IO.File]::ReadLines($f.FullName)) {
+    if ($line -notmatch 'aiTitle|lastPrompt') { continue }
+    try { $e = $line | ConvertFrom-Json } catch { continue }
+    if ($e.aiTitle)    { $title  = $e.aiTitle }
+    if ($e.lastPrompt) { $prompt = $e.lastPrompt }
+  }
+  if (-not $title) { $title = $f.BaseName.Substring(0, 8) }
+  $span = (Get-Date) - $f.LastWriteTime
+  $ago = if ($span.TotalMinutes -lt 1) { '{0:N0}s' -f $span.TotalSeconds }
+         elseif ($span.TotalHours -lt 1) { '{0:N0}m' -f $span.TotalMinutes }
+         elseif ($span.TotalDays -lt 1) { '{0:N0}h' -f $span.TotalHours }
+         else { '{0:N0}d' -f $span.TotalDays }
+  Head (T cont_head "$A$n$X")
+  Say "  $B$title$X"
+  Note (T cont_ago $ago)
+  if ($prompt) { Note ('  "{0}"' -f (($prompt -replace '\s+', ' ').Trim().PadRight(1).Substring(0, [Math]::Min(70, $prompt.Length)))) }
+  if (-not [Console]::IsInputRedirected -and -not $env:CA_YES) { Note (T cont_ask); $null = [Console]::ReadLine() }
+}
+
 function Cmd-Who {
   if ($env:CA_ACCOUNT) {
     Say "$A●$X $(T who_shell "$B$($env:CA_ACCOUNT)$X")"
@@ -326,7 +357,10 @@ function Show-Usage {
 }
 
 $sub  = if ($args.Count -gt 0) { [string]$args[0] } else { '' }
-$rest = if ($args.Count -gt 1) { @($args[1..($args.Count - 1)]) } else { @() }
+# assign in two steps: returning a one-item array from an if-block unwraps it to a string,
+# and splatting a string passes it one character at a time
+$rest = @()
+if ($args.Count -gt 1) { $rest = @($args[1..($args.Count - 1)]) }
 
 switch -Exact ($sub) {
   { $_ -in @('', '-h', '--help', 'help') } { Show-Usage; exit 0 }
@@ -349,6 +383,7 @@ switch -Exact ($sub) {
   default {
     Need-Acc $sub
     if (-not (Get-Command claude -ErrorAction SilentlyContinue)) { Die (T no_claude_err) }
+    if ($rest -contains '--continue' -or $rest -contains '-c') { Show-ContinuePreview $sub }
     # the token lives in this process only and is restored afterwards
     $old = $env:CLAUDE_CODE_OAUTH_TOKEN
     $oldAcc = $env:CA_ACCOUNT

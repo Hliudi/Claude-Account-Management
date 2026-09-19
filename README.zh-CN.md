@@ -57,6 +57,7 @@ ca test
 | 命令 | 作用 |
 | --- | --- |
 | `ca <名> [参数…]` | 用该账号启动 Claude Code，参数原样传给 `claude` |
+| `ca <名> --continue` | 同上，但会先显示将要接续的是哪个会话 |
 | `ca install` | 安装命令，并交互式添加账号 |
 | `ca add <名>` | 保存一个 token（隐藏输入，也可从管道读） |
 | `ca ls` | 列出账号、打码的 token、选定的账号 |
@@ -116,11 +117,13 @@ Remote-SSH 要在远程那台机器上运行，它写的是 `~/.vscode-server/da
 | `CA_DIR` | `~/.config/claude-accts` | token 和选定账号存在哪 |
 | `CA_BIN_DIR` | `~/.local/bin`（Windows：`%LOCALAPPDATA%\claude-accts\bin`） | 命令装到哪 |
 | `CA_LANG` | 跟随系统 | 设成 `zh` 或 `en` 强制输出语言 |
+| `CA_YES` | 未设置 | 设成任意值即跳过 `--continue` 的确认 |
 | `NO_COLOR` | 未设置 | 设成任意值即关闭彩色输出 |
 
 还需要知道的：
 
-- **现在用的是哪个账号？** `ca who`。在已经跑起来的 Claude 会话里，让它执行 `ca who` 也行——`ca` 会把 `CA_ACCOUNT` 传进会话。终端标签页也会改名。
+- **现在用的是哪个账号？** `ca who`。在命令行的 Claude Code 会话里直接输入 `!ca who`，`!` 开头的命令会在当前会话里执行，不用另开终端；`ca` 已经把 `CA_ACCOUNT` 传了进去。终端标签页也会改名。
+- **`--continue` 会先问一下。** 它会打印会话标题、最后活动时间和最后一条消息，等你回车再继续。`CA_YES=1` 可跳过。
 - **切换后 `/usage` 看不到额度条。** 这是正常的：`setup-token` 的凭据不带订阅信息，客户端只能退回到本地花费统计。限额本身仍然按账号在服务器端生效，要看数字就登录 claude.ai 用那个账号查。
 - `--continue` 只能接**本机**的会话，历史不跨机器。
 - `setup-token` 的凭据可能不带 claude.ai 连接器权限，缺功能就在那台机器上 `/login`。

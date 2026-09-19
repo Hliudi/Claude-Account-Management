@@ -57,6 +57,7 @@ Already set up elsewhere? Copy everything over ssh instead: `ca push user@host-a
 | Command | What it does |
 | --- | --- |
 | `ca <name> [args…]` | Run Claude Code as that account; args pass through to `claude` |
+| `ca <name> --continue` | Same, but first shows which conversation is about to resume |
 | `ca install` | Install the command, then add accounts interactively |
 | `ca add <name>` | Store a token (hidden input, or piped on stdin) |
 | `ca ls` | List accounts, masked tokens, and the selected one |
@@ -116,11 +117,13 @@ Over Remote-SSH, run it on the remote machine — it writes `~/.vscode-server/da
 | `CA_DIR` | `~/.config/claude-accts` | Where tokens and the selection live |
 | `CA_BIN_DIR` | `~/.local/bin` (Windows: `%LOCALAPPDATA%\claude-accts\bin`) | Where the command is installed |
 | `CA_LANG` | system locale | `zh` or `en` to force the output language |
+| `CA_YES` | unset | Any value skips the `--continue` confirmation |
 | `NO_COLOR` | unset | Any value disables colored output |
 
 Worth knowing:
 
-- **Which account am I on?** `ca who`. Inside a running Claude session, ask it to run `ca who` — `ca` exports `CA_ACCOUNT`, which the session inherits. The terminal tab is renamed too.
+- **Which account am I on?** `ca who`. Inside a running Claude Code session, type `!ca who` — the `!` prefix runs a shell command without leaving the session, and `ca` exports `CA_ACCOUNT` for it to read. The terminal tab is renamed too.
+- **`--continue` asks first.** It prints the conversation's title, how long ago it was active, and the last message, then waits for Enter. `CA_YES=1` skips the prompt.
 - **`/usage` shows no limit bars after switching.** Expected: a `setup-token` credential carries no subscription info, so the client falls back to a local cost summary. The limits still apply, counted per account on the server — check them on claude.ai while logged in as that account.
 - `--continue` resumes conversations from *that* machine; history doesn't travel between machines.
 - A `setup-token` credential may lack claude.ai connector permissions — run `/login` on that machine if something is missing.
