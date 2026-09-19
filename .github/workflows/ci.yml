@@ -18,7 +18,8 @@ jobs:
         run: |
           export HOME="$(mktemp -d)"
           mkdir -p "$HOME/bin" && printf '#!/bin/bash\necho ok\n' > "$HOME/bin/claude"
-          chmod +x "$HOME/bin/claude" && export PATH="$HOME/bin:$PATH"
+          chmod +x "$HOME/bin/claude"
+          export PATH="$HOME/.local/bin:$HOME/bin:$PATH"   # the rc line ca writes is not read here
           ./ca install < /dev/null
           echo sk-ant-oat01-testtoken | ca add work
           ca ls | grep -q work

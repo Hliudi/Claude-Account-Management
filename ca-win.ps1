@@ -5,6 +5,7 @@
 #   Works on Windows PowerShell 5.1 and PowerShell 7. Install: double-click install.cmd.
 #   Tokens live in %USERPROFILE%\.config\claude-accts and are readable by you only.
 #
+$PipeInput = @($input | ForEach-Object { "$_" })
 $ErrorActionPreference = 'Stop'
 try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } catch {}
 
@@ -142,7 +143,9 @@ function Cmd-Add([string]$n) {
   if (-not $n) { Die 'usage: ca add <name>' }
   Test-Name $n
   Ensure-CaDir
-  if ([Console]::IsInputRedirected) {
+  if ($PipeInput.Count -gt 0) {
+    $t = $PipeInput[0]
+  } elseif ([Console]::IsInputRedirected) {
     $t = [Console]::In.ReadLine()
   } else {
     $ss = Read-Host -AsSecureString (T paste_token "$A$n$X")
@@ -269,7 +272,7 @@ function Cmd-Install {
   Note (T token_dir $CaDir)
   if (-not (Get-Command claude -ErrorAction SilentlyContinue)) { Note (T no_claude) }
 
-  if (-not [Console]::IsInputRedirected) {
+  if (-not [Console]::IsInputRedirected -and $PipeInput.Count -eq 0) {
     $ns = Get-Names
     if ($ns.Count -gt 0) { Note (T have_accs ($ns -join ' ')) }
     Say ''
