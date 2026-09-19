@@ -51,7 +51,13 @@ A `401 OAuth access token is invalid` means the token is expired or was mistyped
 ca who      # this shell / session, plus the account selected for VS Code
 ```
 
-`ca <name>` exports `CA_ACCOUNT`, so `ca who` also answers correctly from inside a running Claude session. Note that `/usage` cannot show subscription limit bars under a `setup-token` credential — that is expected, not a misconfiguration.
+`ca <name>` exports `CA_ACCOUNT`, so `ca who` also answers correctly from inside a running Claude session.
+
+```bash
+ca usage           # 5-hour and weekly limits per account, read from API response headers
+```
+
+`/usage` inside Claude cannot show limit bars under a `setup-token` credential (it lacks the `user:profile` scope) — expected, not a misconfiguration. Use `ca usage`.
 
 ## Everyday use
 

@@ -15,7 +15,7 @@ $BinDir = if ($env:CA_BIN_DIR) { $env:CA_BIN_DIR }
           else { Join-Path (Join-Path $HOME '.local') 'bin' }
 $Self     = $PSCommandPath
 $SrcDir   = Split-Path -Parent $Self
-$Reserved = @('install','add','ls','list','test','rm','update','push','use','vscode','who','whoami','help')
+$Reserved = @('install','add','ls','list','test','rm','update','push','use','vscode','who','whoami','usage','help')
 
 # --- look & feel ---------------------------------------------------------------------------------
 $Color = (-not $env:NO_COLOR) -and $Host.UI.SupportsVirtualTerminal -ne $false
@@ -80,6 +80,9 @@ $Msg = @{
   cont_head    = @('{0} will continue this conversation:', '{0} 将接着这个会话：')
   cont_ago     = @('  last active {0}',              '  最后活动于 {0}')
   cont_ask     = @('Enter to continue · Ctrl-C to cancel', '回车继续 · Ctrl-C 取消')
+  usage_5h     = @('  5h    {0} {1,3}%   resets {2}', '  5 小时  {0} {1,3}%   {2} 重置')
+  usage_7d     = @('  week  {0} {1,3}%   resets {2}', '  本周    {0} {1,3}%   {2} 重置')
+  usage_fail   = @('  could not read limits ({0})', '  读不到额度（{0}）')
   who_shell    = @('This session runs as {0}',            '当前会话用的是 {0}')
   who_login    = @('This shell uses the /login account {0}', '当前 shell 用的是 /login 的账号 {0}')
   who_vscode   = @('  ↳ default account is {0}',          '  ↳ 默认账号是 {0}')
@@ -267,6 +270,45 @@ function Show-ContinuePreview([string]$n) {
   if (-not [Console]::IsInputRedirected -and -not $env:CA_YES) { Note (T cont_ask); $null = [Console]::ReadLine() }
 }
 
+# Rate limits are not in the token, but the API reports them in response headers, so one
+# minimal call per account (a single Haiku token) reads them back.
+function Show-Bar([int]$pct) {
+  $filled = [Math]::Min(10, [Math]::Ceiling($pct / 10.0))
+  ('█' * $filled) + ('░' * (10 - $filled))
+}
+
+function Cmd-Usage([string[]]$ns) {
+  if (-not $ns -or $ns.Count -eq 0) { $ns = Get-Names }
+  if ($ns.Count -eq 0) { Die (T no_accounts) }
+  $body = '{"model":"claude-haiku-4-5-20251001","max_tokens":1,"system":[{"type":"text","text":"You are Claude Code, Anthropic''s official CLI for Claude."}],"messages":[{"role":"user","content":"hi"}]}'
+  foreach ($n in $ns) {
+    Need-Acc $n
+    Head $n
+    $headers = $null
+    try {
+      $r = Invoke-WebRequest -Uri 'https://api.anthropic.com/v1/messages' -Method Post -TimeoutSec 60 `
+             -Headers @{ Authorization = "Bearer $(Get-Token $n)"; 'anthropic-version' = '2023-06-01'; 'anthropic-beta' = 'oauth-2025-04-20' } `
+             -ContentType 'application/json' -Body $body -UseBasicParsing
+      $headers = $r.Headers
+    } catch {
+      Note (T usage_fail $_.Exception.Message); continue
+    }
+    $any = $false
+    foreach ($pair in @(@('5h', 'usage_5h'), @('7d', 'usage_7d'))) {
+      $u = $headers["anthropic-ratelimit-unified-$($pair[0])-utilization"]
+      $res = $headers["anthropic-ratelimit-unified-$($pair[0])-reset"]
+      if (-not $u) { continue }
+      if ($u -is [array]) { $u = $u[0] }
+      if ($res -is [array]) { $res = $res[0] }
+      $pct = [int][Math]::Round([double]$u * 100)
+      $when = if ($res) { ([DateTimeOffset]::FromUnixTimeSeconds([int64]$res)).LocalDateTime.ToString('MMM dd HH:mm') } else { '?' }
+      Say (T $pair[1] (Show-Bar $pct) $pct $when)
+      $any = $true
+    }
+    if (-not $any) { Note (T usage_fail 'no rate-limit headers') }
+  }
+}
+
 function Cmd-Who {
   if ($env:CA_ACCOUNT) {
     Say "$A●$X $(T who_shell "$B$($env:CA_ACCOUNT)$X")"
@@ -350,6 +392,7 @@ function Show-Usage {
   Write-Output "  ${B}ca test$X [name...]         check the tokens with one real call"
   Write-Output "  ${B}ca rm$X <name>              forget an account"
   Write-Output "  ${B}ca who$X                    show which account this session is spending"
+  Write-Output "  ${B}ca usage$X [name...]        5-hour and weekly limits, per account"
   Write-Output "  ${B}ca use$X [name|--off]       set the default account (VS Code, new terminals)"
   Write-Output "  ${B}ca update$X                 git pull this checkout`n"
   Note ("tokens: $CaDir" + $(if ($cur) { "   |   default: $cur" } else { '' }))
@@ -377,6 +420,7 @@ switch -Exact ($sub) {
   'rm'      { Cmd-Rm ([string]($rest | Select-Object -First 1)); exit 0 }
   'use'     { Cmd-Use ([string]($rest | Select-Object -First 1)); exit 0 }
   { $_ -in @('who','whoami') } { Cmd-Who; exit 0 }
+  'usage'   { Cmd-Usage ([string[]]$rest); exit 0 }
   'update'  { Cmd-Update }
   'vscode'  { Note (T vscode_win); exit 0 }
   'push'    { Die (T no_push) }

@@ -9,7 +9,7 @@ set -euo pipefail
 
 CA_DIR="${CA_DIR:-$HOME/.config/claude-accts}"
 BIN_DIR="${CA_BIN_DIR:-$HOME/.local/bin}"
-RESERVED=" install add ls list test rm update push use vscode who whoami help "
+RESERVED=" install add ls list test rm update push use vscode who whoami usage help "
 
 # --- resolve our own path (macOS ships no readlink -f) --------------------------------------------
 realpath_() {
@@ -91,6 +91,10 @@ t() {
     cont_head)    en='%s will continue this conversation:'; zh='%s 将接着这个会话：' ;;
     cont_ago)     en='  last active %s'; zh='  最后活动于 %s' ;;
     cont_ask)     en='Enter to continue · Ctrl-C to cancel'; zh='回车继续 · Ctrl-C 取消' ;;
+    usage_5h)     en='  5h    %s %3d%%   resets %s'; zh='  5 小时  %s %3d%%   %s 重置' ;;
+    usage_7d)     en='  week  %s %3d%%   resets %s'; zh='  本周    %s %3d%%   %s 重置' ;;
+    usage_fail)   en='  could not read limits (%s)'; zh='  读不到额度（%s）' ;;
+    usage_need)   en='ca usage needs curl and python3.'; zh='ca usage 需要 curl 和 python3。' ;;
     who_shell)    en='This session runs as %s'; zh='当前会话用的是 %s' ;;
     who_login)    en='This shell uses the /login account %s'; zh='当前 shell 用的是 /login 的账号 %s' ;;
     who_vscode)   en='  ↳ VS Code extension uses %s'; zh='  ↳ VS Code 扩展用的是 %s' ;;
@@ -321,6 +325,61 @@ cmd_vscode() {
 
 # `ca who` answers "whose quota am I spending?" — including from inside a running session,
 # because CA_ACCOUNT is inherited by Claude Code and by the shell it runs commands in.
+# Rate limits are not in the token, but the API reports them in response headers, so one
+# minimal call per account (a single Haiku token) reads them back.
+USAGE_PY='
+import sys, time
+h = {}
+for line in sys.stdin:
+    if ":" in line:
+        k, _, v = line.partition(":")
+        h[k.strip().lower()] = v.strip()
+out = []
+for key, label in (("5h", "5h"), ("7d", "7d")):
+    u = h.get("anthropic-ratelimit-unified-%s-utilization" % key)
+    r = h.get("anthropic-ratelimit-unified-%s-reset" % key)
+    if u is None: continue
+    pct = int(round(float(u) * 100))
+    when = time.strftime("%b %d %H:%M", time.localtime(int(r))) if r else "?"
+    out.append("%s %d %s" % (label, pct, when))
+if not out: raise SystemExit(1)
+print("\n".join(out))
+'
+
+bar() {   # $1 = percent
+  local i filled=$(( ($1 + 9) / 10 )) out=''
+  [[ $filled -gt 10 ]] && filled=10
+  for ((i = 0; i < 10; i++)); do [[ $i -lt $filled ]] && out+='█' || out+='░'; done
+  printf '%s' "$out"
+}
+
+cmd_usage() {
+  local n line kind pct when
+  command -v curl >/dev/null && command -v python3 >/dev/null || die "$(t usage_need)"
+  [[ $# -gt 0 ]] || set -- $(names)      # shellcheck disable=SC2046
+  [[ $# -gt 0 ]] || die "$(t no_accounts)"
+  for n in "$@"; do
+    need_acc "$n"
+    head_ "$n"
+    local hdr rc=0
+    hdr="$(curl -s -D - -o /dev/null --max-time 60 -X POST https://api.anthropic.com/v1/messages \
+      -H "Authorization: Bearer $(cat "$(tok_file "$n")")" \
+      -H 'anthropic-version: 2023-06-01' -H 'anthropic-beta: oauth-2025-04-20' -H 'content-type: application/json' \
+      -d '{"model":"claude-haiku-4-5-20251001","max_tokens":1,"system":[{"type":"text","text":"You are Claude Code, Anthropic'"'"'s official CLI for Claude."}],"messages":[{"role":"user","content":"hi"}]}' 2>&1)" || rc=$?
+    if [[ $rc -ne 0 ]]; then note "$(t usage_fail "curl $rc")"; continue; fi
+    local parsed=''
+    if ! parsed="$(python3 -c "$USAGE_PY" <<<"$hdr" 2>/dev/null)"; then
+      note "$(t usage_fail "$(grep -io '"message":"[^"]*' <<<"$hdr" | head -1 | cut -c12- || echo 'no rate-limit headers')")"
+      continue
+    fi
+    while read -r kind pct when; do
+      [[ -n "$kind" ]] || continue
+      if [[ "$kind" == 5h ]]; then t usage_5h "$(bar "$pct")" "$pct" "$when"
+      else t usage_7d "$(bar "$pct")" "$pct" "$when"; fi
+    done <<<"$parsed"
+  done
+}
+
 cmd_who() {
   local cur
   if [[ -n "${CA_ACCOUNT:-}" ]]; then
@@ -398,6 +457,7 @@ usage() {
   printf '  %sca test%s [name...]         check the tokens with one real call\n' "$B" "$X"
   printf '  %sca rm%s <name>              forget an account\n' "$B" "$X"
   printf '  %sca who%s                    show which account this session is spending\n' "$B" "$X"
+  printf '  %sca usage%s [name...]        5-hour and weekly limits, per account\n' "$B" "$X"
   printf '  %sca use%s [name|--off]       pick the account the VS Code extension uses\n' "$B" "$X"
   printf '  %sca vscode%s [--apply]       set up the VS Code wrapper\n' "$B" "$X"
   printf '  %sca push%s <host>...         deploy script + tokens to other machines over ssh\n' "$B" "$X"
@@ -417,6 +477,7 @@ case "${1:-}" in
   push)    shift; cmd_push "$@" ;;
   use)     shift; cmd_use "$@" ;;
   who|whoami) cmd_who ;;
+  usage)   shift; cmd_usage "$@" ;;
   vscode)  shift; cmd_vscode "$@" ;;
   -*)      die "unknown option $1 — run \`ca help\`" ;;
   *)       cmd_run "$@" ;;

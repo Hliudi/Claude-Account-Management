@@ -15,9 +15,13 @@
 ---
 
 ```console
-$ ca ls
-  work           …k7Fq2A  2026-09-20
-* research       …p2Xm9A  2026-09-20
+$ ca usage
+✳ work
+  5h    █░░░░░░░░░   2%   resets Sep 20 05:20
+  week  ██████████  97%   resets Sep 23 07:00
+✳ research
+  5h    ██░░░░░░░░  18%   resets Sep 20 06:10
+  week  █░░░░░░░░░   2%   resets Sep 23 21:00
 
 $ ca research --continue      # weekly limit hit on `work`? same conversation, other account
 ```
@@ -62,6 +66,7 @@ Already set up elsewhere? Copy everything over ssh instead: `ca push user@host-a
 | `ca add <name>` | Store a token (hidden input, or piped on stdin) |
 | `ca ls` | List accounts, masked tokens, and the selected one |
 | `ca who` | Which account this session is spending — works inside a running session too |
+| `ca usage [name…]` | 5-hour and weekly limits for each account |
 | `ca test [name…]` | One real call per account to verify the tokens |
 | `ca rm <name>` | Forget an account |
 | `ca use [name\|--off]` | Pick the account the VS Code extension uses |
@@ -124,7 +129,7 @@ Worth knowing:
 
 - **Which account am I on?** `ca who`. Inside a running Claude Code session, type `!ca who` — the `!` prefix runs a shell command without leaving the session, and `ca` exports `CA_ACCOUNT` for it to read. The terminal tab is renamed too.
 - **`--continue` asks first.** It prints the conversation's title, how long ago it was active, and the last message, then waits for Enter. `CA_YES=1` skips the prompt.
-- **`/usage` shows no limit bars after switching.** Expected: a `setup-token` credential carries no subscription info, so the client falls back to a local cost summary. The limits still apply, counted per account on the server — check them on claude.ai while logged in as that account.
+- **`/usage` shows no limit bars after switching.** A `setup-token` credential lacks the `user:profile` scope the client needs for that view, so it falls back to a local cost summary. Use `ca usage` instead: it reads the limits from the API's rate-limit response headers, which work under any credential. It costs one Haiku token per account.
 - `--continue` resumes conversations from *that* machine; history doesn't travel between machines.
 - A `setup-token` credential may lack claude.ai connector permissions — run `/login` on that machine if something is missing.
 
