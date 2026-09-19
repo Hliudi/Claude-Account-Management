@@ -57,7 +57,7 @@ Already set up elsewhere? Copy everything over ssh instead: `ca push user@host-a
 | Command | What it does |
 | --- | --- |
 | `ca <name> [args…]` | Run Claude Code as that account; args pass through to `claude` |
-| `ca <name> --continue` | Same, but first shows which conversation is about to resume |
+| `ca <name> --continue` | Same, but first shows which conversation is about to resume (`-c` works too) |
 | `ca install` | Install the command, then add accounts interactively |
 | `ca add <name>` | Store a token (hidden input, or piped on stdin) |
 | `ca ls` | List accounts, masked tokens, and the selected one |
@@ -69,7 +69,7 @@ Already set up elsewhere? Copy everything over ssh instead: `ca push user@host-a
 | `ca push <host>…` | Deploy script + tokens to other machines over ssh |
 | `ca update` | `git pull` this checkout — every machine installed from it follows |
 
-Account names are yours to pick: letters, digits, `_`, `-`, as long as they aren't subcommands.
+Account names are yours to pick: letters, digits, `_`, `-`, as long as they aren't subcommands. Everything after the name is Claude Code's own CLI, short flags included: `ca work -c`, `ca work -r`, `ca work --model opus`.
 
 ## Platforms
 

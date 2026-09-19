@@ -57,7 +57,7 @@ ca test
 | 命令 | 作用 |
 | --- | --- |
 | `ca <名> [参数…]` | 用该账号启动 Claude Code，参数原样传给 `claude` |
-| `ca <名> --continue` | 同上，但会先显示将要接续的是哪个会话 |
+| `ca <名> --continue` | 同上，但会先显示将要接续的是哪个会话（`-c` 同样有效） |
 | `ca install` | 安装命令，并交互式添加账号 |
 | `ca add <名>` | 保存一个 token（隐藏输入，也可从管道读） |
 | `ca ls` | 列出账号、打码的 token、选定的账号 |
@@ -69,7 +69,7 @@ ca test
 | `ca push <主机>…` | 通过 ssh 把脚本和 token 部署到其他机器 |
 | `ca update` | `git pull` 这份 clone，从它安装的机器跟着更新 |
 
-账号名自己定：字母、数字、`_`、`-`，不与子命令重名即可。
+账号名自己定：字母、数字、`_`、`-`，不与子命令重名即可。名字后面就是 Claude Code 自己的命令行，短选项照用：`ca work -c`、`ca work -r`、`ca work --model opus`。
 
 ## 支持的系统
 
