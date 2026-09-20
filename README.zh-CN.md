@@ -63,6 +63,7 @@ ca test
 | `ca <名> [参数…]` | 用该账号启动 Claude Code，参数原样传给 `claude` |
 | `ca <名> --continue` | 同上，但会先显示将要接续的是哪个会话（`-c` 同样有效） |
 | `ca install` | 安装命令，并交互式添加账号 |
+| `ca setup-token` | 生成 token；只装了 VS Code 扩展的机器也能用 |
 | `ca add <名>` | 保存一个 token（隐藏输入，也可从管道读） |
 | `ca ls` | 列出账号、打码的 token、选定的账号 |
 | `ca who` | 当前会话在花谁的额度，会话内部也能查 |
@@ -86,6 +87,8 @@ ca test
 | Windows + Git Bash | `ca`（bash） | `./ca install` |
 
 两个版本共用同一个 token 目录，一台 Windows 上随便用哪个都行。
+
+**只装了 VS Code 扩展、没装命令行？** 照样能用。扩展自带一个 `claude` 二进制，`PATH` 里找不到命令行时 `ca` 会自动回退到它，所以 `ca setup-token`、`ca test`、`ca <名>` 都能跑。而扩展内部的账号切换本来就不需要命令行。
 
 ## VS Code 扩展
 
@@ -127,7 +130,7 @@ Remote-SSH 要在远程那台机器上运行，它写的是 `~/.vscode-server/da
 
 还需要知道的：
 
-- **现在用的是哪个账号？** `ca who`。在命令行的 Claude Code 会话里直接输入 `!ca who`，`!` 开头的命令会在当前会话里执行，不用另开终端；`ca` 已经把 `CA_ACCOUNT` 传了进去。终端标签页也会改名。
+- **现在用的是哪个账号？** `ca who`。在命令行的 Claude Code 会话里直接输入 `!ca who`，`!` 开头的命令会在当前会话里执行，不用另开终端。它以 token 为准；如果环境里只剩下 `CA_ACCOUNT`，会显示成「启动时用的是 …」，因为继承来的变量可能比设置它的那个会话活得更久。终端标签页也会改名。
 - **`--continue` 会先问一下。** 它会打印会话标题、最后活动时间和最后一条消息，等你回车再继续。`CA_YES=1` 可跳过。
 - **切换后 `/usage` 看不到额度条。** `setup-token` 的凭据缺 `user:profile` 权限，那个界面读不到数据，只能退回本地花费统计。改用 `ca usage`：它从 API 响应头里的限额字段读，任何凭据都有效，代价是每个账号一次 Haiku 调用（一个 token）。
 - `--continue` 只能接**本机**的会话，历史不跨机器。

@@ -9,7 +9,7 @@ set -euo pipefail
 
 CA_DIR="${CA_DIR:-$HOME/.config/claude-accts}"
 BIN_DIR="${CA_BIN_DIR:-$HOME/.local/bin}"
-RESERVED=" install add ls list test rm update push use vscode who whoami usage help "
+RESERVED=" install add ls list test rm update push use vscode who whoami usage setup-token help "
 
 # --- resolve our own path (macOS ships no readlink -f) --------------------------------------------
 realpath_() {
@@ -95,7 +95,12 @@ t() {
     usage_7d)     en='  week  %s %3d%%   resets %s'; zh='  本周    %s %3d%%   %s 重置' ;;
     usage_fail)   en='  could not read limits (%s)'; zh='  读不到额度（%s）' ;;
     usage_need)   en='ca usage needs curl and python3.'; zh='ca usage 需要 curl 和 python3。' ;;
+    bundled)      en='  ↳ using the binary bundled with the VS Code extension'
+                  zh='  ↳ 用的是 VS Code 扩展自带的二进制' ;;
     who_shell)    en='This session runs as %s'; zh='当前会话用的是 %s' ;;
+    who_stale)    en='Launched as %s'; zh='启动时用的是 %s' ;;
+    who_stale_n)  en='  ↳ from the inherited environment; a session resumed with plain `claude` would not be'
+                  zh='  ↳ 来自继承的环境变量；如果这个会话是用普通 `claude` 恢复的，那它其实不是这个账号' ;;
     who_login)    en='This shell uses the /login account %s'; zh='当前 shell 用的是 /login 的账号 %s' ;;
     who_vscode)   en='  ↳ VS Code extension uses %s'; zh='  ↳ VS Code 扩展用的是 %s' ;;
     git_refuse)   en='%s sits inside a git repository — refusing to keep tokens there. Set CA_DIR elsewhere.'
@@ -106,6 +111,23 @@ t() {
 
 # --- helpers -------------------------------------------------------------------------------------
 tok_file() { echo "$CA_DIR/$1.token"; }
+
+# Claude Code from PATH, or the copy the VS Code extension ships, so a machine with only the
+# extension installed can still mint tokens and start sessions.
+is_bundled() { [[ "$1" == */native-binary/claude ]]; }
+claude_bin() {
+  if command -v claude >/dev/null; then command -v claude; return 0; fi
+  local d b
+  for d in "$HOME/.vscode-server/extensions" "$HOME/.vscode/extensions" \
+           "$HOME/.vscode-insiders/extensions" "$HOME/.vscode-server-insiders/extensions" \
+           "$HOME/.cursor/extensions" "$HOME/.cursor-server/extensions" \
+           "$HOME/.windsurf/extensions" "$HOME/.windsurf-server/extensions"; do
+    [[ -d "$d" ]] || continue
+    b="$(ls -d "$d"/anthropic.claude-code-*/resources/native-binary/claude 2>/dev/null | sort -V | tail -1)"
+    if [[ -n "$b" && -x "$b" ]]; then echo "$b"; return 0; fi
+  done
+  return 1
+}
 names() { local f; for f in "$CA_DIR"/*.token; do [[ -f "$f" ]] && basename "$f" .token; done; return 0; }
 current() { [[ -f "$CA_DIR/current" ]] && cat "$CA_DIR/current"; return 0; }
 need_acc() { [[ -f "$(tok_file "$1")" ]] || die "$(t no_account "$A$1$X" "$(names | tr '\n' ' ')")"; }
@@ -203,12 +225,13 @@ cmd_test() {
   # shellcheck disable=SC2046  # names() prints one account per line; splitting is the point
   [[ $# -gt 0 ]] || set -- $(names)
   [[ $# -gt 0 ]] || die "$(t no_accounts)"
-  command -v claude >/dev/null || die "$(t no_claude_err)"
+  local bin; bin="$(claude_bin)" || die "$(t no_claude_err)"
+  ! is_bundled "$bin" || note "$(t bundled)"
   command -v timeout >/dev/null && to="timeout 90"
   local bad=0
   for n in "$@"; do
     need_acc "$n"
-    out="$(CLAUDE_CODE_OAUTH_TOKEN="$(cat "$(tok_file "$n")")" $to claude -p "reply with the single word ok" --max-turns 1 </dev/null 2>&1 || true)"
+    out="$(CLAUDE_CODE_OAUTH_TOKEN="$(cat "$(tok_file "$n")")" $to "$bin" -p "reply with the single word ok" --max-turns 1 </dev/null 2>&1 || true)"
     if grep -qiE 'api error|failed to authenticate|invalid|limit' <<<"$out" || ! grep -qi 'ok' <<<"$out"; then
       printf '%s✗%s %s%-14s%s %s\n' "$R" "$X" "$B" "$n" "$X" "$(grep -iE 'error|fail|invalid|limit' <<<"$out" | head -1 || true)"
       bad=1
@@ -381,14 +404,33 @@ cmd_usage() {
   done
 }
 
+# Useful where only the VS Code extension is installed: its bundled binary mints tokens too.
+cmd_setup_token() {
+  local bin; bin="$(claude_bin)" || die "$(t no_claude_err)"
+  ! is_bundled "$bin" || note "$(t bundled)"
+  exec "$bin" setup-token
+}
+
 cmd_who() {
-  local cur
-  if [[ -n "${CA_ACCOUNT:-}" ]]; then
-    say "$(printf '%s●%s %s' "$A" "$X" "$(t who_shell "$B$CA_ACCOUNT$X")")"
+  local cur tok n
+  tok="${CLAUDE_CODE_OAUTH_TOKEN:-}"
+  if [[ -n "$tok" ]]; then
+    # the token is the ground truth: name the account it belongs to
+    for n in $(names); do
+      if [[ "$tok" == "$(cat "$(tok_file "$n")")" ]]; then
+        say "$(printf '%s●%s %s' "$A" "$X" "$(t who_shell "$B$n$X")")"
+        break
+      fi
+    done
+  elif [[ -n "${CA_ACCOUNT:-}" ]]; then
+    # CA_ACCOUNT survives in child shells even where the token was scrubbed, so it can be stale
+    say "$(printf '%s●%s %s' "$A" "$X" "$(t who_stale "$B$CA_ACCOUNT$X")")"
+    note "$(t who_stale_n)"
   else
-    local email=''
-    if command -v claude >/dev/null && command -v python3 >/dev/null; then
-      email="$(claude auth status --json 2>/dev/null | python3 -c 'import sys,json
+    local email='' bin
+    bin="$(claude_bin 2>/dev/null)" || bin=''
+    if [[ -n "$bin" ]] && command -v python3 >/dev/null; then
+      email="$("$bin" auth status --json 2>/dev/null | python3 -c 'import sys,json
 try: d=json.load(sys.stdin)
 except Exception: raise SystemExit
 print(d.get("email") or "")' 2>/dev/null || true)"
@@ -399,53 +441,16 @@ print(d.get("email") or "")' 2>/dev/null || true)"
   [[ -z "$cur" ]] || note "$(t who_vscode "$cur")"
 }
 
-# --continue is otherwise a blind jump: show which conversation is about to be resumed.
-# Session files are Claude Code's own: ~/.claude/projects/<cwd with / as ->/<uuid>.jsonl
-PREVIEW_PY='
-import json, os, sys, time
-d = sys.argv[1]
-files = [os.path.join(d, f) for f in os.listdir(d) if f.endswith(".jsonl")]
-if not files: raise SystemExit(1)
-f = max(files, key=os.path.getmtime)
-title = prompt = ""
-for line in open(f, encoding="utf-8", errors="replace"):
-    if "aiTitle" not in line and "lastPrompt" not in line: continue
-    try: e = json.loads(line)
-    except ValueError: continue
-    title = e.get("aiTitle") or title
-    prompt = e.get("lastPrompt") or prompt
-age = int(time.time() - os.path.getmtime(f))
-unit = ("%ds" % age) if age < 60 else ("%dm" % (age // 60)) if age < 3600 else ("%dh" % (age // 3600)) if age < 86400 else ("%dd" % (age // 86400))
-print(title.strip() or os.path.basename(f)[:8])
-print(unit)
-print(" ".join(prompt.split())[:70])
-'
-
-preview_continue() {
-  local n="$1" dir out title ago prompt
-  command -v python3 >/dev/null || return 0
-  dir="$HOME/.claude/projects/$(pwd -P | tr '/.' '--')"
-  [[ -d "$dir" ]] || return 0
-  out="$(python3 -c "$PREVIEW_PY" "$dir" 2>/dev/null)" || return 0
-  title="$(sed -n 1p <<<"$out")"; ago="$(sed -n 2p <<<"$out")"; prompt="$(sed -n 3p <<<"$out")"
-  head_ "$(t cont_head "$A$n$X")"
-  printf '  %s%s%s\n' "$B" "$title" "$X"
-  note "$(t cont_ago "$ago")"
-  [[ -z "$prompt" ]] || note "  \"$prompt\""
-  if [[ -t 0 && -t 1 && -z "${CA_YES:-}" ]]; then read -rsp "$(printf '%s%s%s' "$D" "$(t cont_ask)" "$X")"; echo; fi
-  return 0
-}
-
 cmd_run() {
-  local n="$1" a; shift
+  local n="$1" a bin; shift
   need_acc "$n"
   for a in "$@"; do
     if [[ "$a" == --continue || "$a" == -c ]]; then preview_continue "$n"; break; fi
   done
-  command -v claude >/dev/null || die "$(t no_claude_err)"
+  bin="$(claude_bin)" || die "$(t no_claude_err)"
   # name the terminal tab, so a glance tells you which account the session is spending
   [[ -t 1 ]] && printf '\033]0;claude · %s\007' "$n"
-  CA_ACCOUNT="$n" CLAUDE_CODE_OAUTH_TOKEN="$(cat "$(tok_file "$n")")" exec claude "$@"
+  CA_ACCOUNT="$n" CLAUDE_CODE_OAUTH_TOKEN="$(cat "$(tok_file "$n")")" exec "$bin" "$@"
 }
 
 usage() {
@@ -453,6 +458,7 @@ usage() {
   printf '%s✳%s %sca%s — switch between your own Claude subscription accounts\n\n' "$A" "$X" "$B" "$X"
   printf '  %sca <name>%s [claude args]   run Claude Code as that account, e.g. ca work --continue\n' "$B" "$X"
   printf '  %sca install%s                install the command, then add accounts interactively\n' "$B" "$X"
+  printf '  %sca setup-token%s            mint a token (works with only the VS Code extension)\n' "$B" "$X"
   printf '  %sca add%s <name>             store a token from `claude setup-token`\n' "$B" "$X"
   printf '  %sca ls%s                     list accounts\n' "$B" "$X"
   printf '  %sca test%s [name...]         check the tokens with one real call\n' "$B" "$X"
@@ -479,6 +485,7 @@ case "${1:-}" in
   use)     shift; cmd_use "$@" ;;
   who|whoami) cmd_who ;;
   usage)   shift; cmd_usage "$@" ;;
+  setup-token) cmd_setup_token ;;
   vscode)  shift; cmd_vscode "$@" ;;
   -*)      die "unknown option $1 — run \`ca help\`" ;;
   *)       cmd_run "$@" ;;

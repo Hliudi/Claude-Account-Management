@@ -15,7 +15,7 @@ $BinDir = if ($env:CA_BIN_DIR) { $env:CA_BIN_DIR }
           else { Join-Path (Join-Path $HOME '.local') 'bin' }
 $Self     = $PSCommandPath
 $SrcDir   = Split-Path -Parent $Self
-$Reserved = @('install','add','ls','list','test','rm','update','push','use','vscode','who','whoami','usage','help')
+$Reserved = @('install','add','ls','list','test','rm','update','push','use','vscode','who','whoami','usage','setup-token','help')
 
 # --- look & feel ---------------------------------------------------------------------------------
 $Color = (-not $env:NO_COLOR) -and $Host.UI.SupportsVirtualTerminal -ne $false
@@ -83,6 +83,11 @@ $Msg = @{
   usage_5h     = @('  5h    {0} {1,3}%   resets {2}', '  5 小时  {0} {1,3}%   {2} 重置')
   usage_7d     = @('  week  {0} {1,3}%   resets {2}', '  本周    {0} {1,3}%   {2} 重置')
   usage_fail   = @('  could not read limits ({0})', '  读不到额度（{0}）')
+  bundled      = @('  ↳ using the binary bundled with the VS Code extension',
+                   '  ↳ 用的是 VS Code 扩展自带的二进制')
+  who_stale    = @('Launched as {0}',               '启动时用的是 {0}')
+  who_stale_n  = @('  ↳ from the inherited environment; a session resumed with plain `claude` would not be',
+                   '  ↳ 来自继承的环境变量；如果这个会话是用普通 `claude` 恢复的，那它其实不是这个账号')
   who_shell    = @('This session runs as {0}',            '当前会话用的是 {0}')
   who_login    = @('This shell uses the /login account {0}', '当前 shell 用的是 /login 的账号 {0}')
   who_vscode   = @('  ↳ default account is {0}',          '  ↳ 默认账号是 {0}')
@@ -107,6 +112,29 @@ function Get-Current {
   $f = Join-Path $CaDir 'current'
   if (Test-Path -LiteralPath $f) { ([IO.File]::ReadAllText($f)).Trim() } else { '' }
 }
+# Claude Code from PATH, or the copy the VS Code extension ships, so a machine with only the
+# extension installed can still mint tokens and start sessions.
+function Get-ClaudeBin {
+  $c = Get-Command claude -ErrorAction SilentlyContinue
+  if ($c) { return $c.Source }
+  $roots = @('.vscode\extensions', '.vscode-server\extensions', '.vscode-insiders\extensions',
+             '.cursor\extensions', '.cursor-server\extensions', '.windsurf\extensions')
+  foreach ($r in $roots) {
+    $dir = Join-Path $HOME $r
+    if (-not (Test-Path -LiteralPath $dir)) { continue }
+    $hit = Get-ChildItem -LiteralPath $dir -Filter 'anthropic.claude-code-*' -Directory -ErrorAction SilentlyContinue |
+           Sort-Object Name | ForEach-Object {
+             foreach ($exe in @('claude.exe', 'claude')) {
+               $p = Join-Path (Join-Path $_.FullName 'resources\native-binary') $exe
+               if (Test-Path -LiteralPath $p) { $p }
+             }
+           } | Select-Object -Last 1
+    if ($hit) { return $hit }
+  }
+  return $null
+}
+function Test-Bundled([string]$p) { $p -and ($p -match 'native-binary') }
+
 function Get-Token([string]$n) { ([IO.File]::ReadAllText((TokFile $n))).Trim() }
 function Need-Acc([string]$n) {
   if (-not (Test-Path -LiteralPath (TokFile $n))) { Die (T no_account "$A$n$X" ((Get-Names) -join ' ')) }
@@ -188,14 +216,16 @@ function Cmd-Ls {
 function Cmd-Test([string[]]$ns) {
   if (-not $ns -or $ns.Count -eq 0) { $ns = Get-Names }
   if ($ns.Count -eq 0) { Die (T no_accounts) }
-  if (-not (Get-Command claude -ErrorAction SilentlyContinue)) { Die (T no_claude_err) }
+  $bin = Get-ClaudeBin
+  if (-not $bin) { Die (T no_claude_err) }
+  if (Test-Bundled $bin) { Note (T bundled) }
   $bad = 0
   foreach ($n in $ns) {
     Need-Acc $n
     $ErrorActionPreference = 'Continue'
     $old = $env:CLAUDE_CODE_OAUTH_TOKEN
     $env:CLAUDE_CODE_OAUTH_TOKEN = Get-Token $n
-    try { $out = ('' | & claude -p 'reply with the single word ok' --max-turns 1 2>&1 | Out-String) }
+    try { $out = ('' | & $bin -p 'reply with the single word ok' --max-turns 1 2>&1 | Out-String) }
     finally {
       if ($null -eq $old) { Remove-Item Env:CLAUDE_CODE_OAUTH_TOKEN -ErrorAction SilentlyContinue } else { $env:CLAUDE_CODE_OAUTH_TOKEN = $old }
       $ErrorActionPreference = 'Stop'
@@ -310,13 +340,20 @@ function Cmd-Usage([string[]]$ns) {
 }
 
 function Cmd-Who {
-  if ($env:CA_ACCOUNT) {
-    Say "$A●$X $(T who_shell "$B$($env:CA_ACCOUNT)$X")"
+  $tok = $env:CLAUDE_CODE_OAUTH_TOKEN
+  if ($tok) {
+    # the token is the ground truth: name the account it belongs to
+    foreach ($n in Get-Names) { if ((Get-Token $n) -eq $tok) { Say "$A●$X $(T who_shell "$B$n$X")"; break } }
+  } elseif ($env:CA_ACCOUNT) {
+    # CA_ACCOUNT survives in child shells even where the token was scrubbed, so it can be stale
+    Say "$A●$X $(T who_stale "$B$($env:CA_ACCOUNT)$X")"
+    Note (T who_stale_n)
   } else {
     $email = ''
-    if (Get-Command claude -ErrorAction SilentlyContinue) {
+    $bin = Get-ClaudeBin
+    if ($bin) {
       $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-      try { $j = (& claude auth status --json 2>$null | Out-String); if ($j) { $email = ($j | ConvertFrom-Json).email } } catch { }
+      try { $j = (& $bin auth status --json 2>$null | Out-String); if ($j) { $email = ($j | ConvertFrom-Json).email } } catch { }
       finally { $ErrorActionPreference = $old }
     }
     if (-not $email) { $email = '/login' }
@@ -324,6 +361,14 @@ function Cmd-Who {
   }
   $cur = Get-Current
   if ($cur) { Note (T who_vscode $cur) }
+}
+
+function Cmd-SetupToken {
+  $bin = Get-ClaudeBin
+  if (-not $bin) { Die (T no_claude_err) }
+  if (Test-Bundled $bin) { Note (T bundled) }
+  & $bin setup-token
+  exit $LASTEXITCODE
 }
 
 function Cmd-Update {
@@ -387,6 +432,7 @@ function Show-Usage {
   Write-Output "$A✳$X ${B}ca$X — switch between your own Claude subscription accounts`n"
   Write-Output "  ${B}ca <name>$X [claude args]   run Claude Code as that account, e.g. ca work --continue"
   Write-Output "  ${B}ca install$X                install the command, then add accounts interactively"
+  Write-Output "  ${B}ca setup-token$X            mint a token (works with only the VS Code extension)"
   Write-Output "  ${B}ca add$X <name>             store a token from ``claude setup-token``"
   Write-Output "  ${B}ca ls$X                     list accounts"
   Write-Output "  ${B}ca test$X [name...]         check the tokens with one real call"
@@ -421,12 +467,14 @@ switch -Exact ($sub) {
   'use'     { Cmd-Use ([string]($rest | Select-Object -First 1)); exit 0 }
   { $_ -in @('who','whoami') } { Cmd-Who; exit 0 }
   'usage'   { Cmd-Usage ([string[]]$rest); exit 0 }
+  'setup-token' { Cmd-SetupToken }
   'update'  { Cmd-Update }
   'vscode'  { Note (T vscode_win); exit 0 }
   'push'    { Die (T no_push) }
   default {
     Need-Acc $sub
-    if (-not (Get-Command claude -ErrorAction SilentlyContinue)) { Die (T no_claude_err) }
+    $bin = Get-ClaudeBin
+    if (-not $bin) { Die (T no_claude_err) }
     if ($rest -contains '--continue' -or $rest -contains '-c') { Show-ContinuePreview $sub }
     # the token lives in this process only and is restored afterwards
     $old = $env:CLAUDE_CODE_OAUTH_TOKEN
@@ -434,7 +482,7 @@ switch -Exact ($sub) {
     $env:CLAUDE_CODE_OAUTH_TOKEN = Get-Token $sub
     $env:CA_ACCOUNT = $sub
     try { $Host.UI.RawUI.WindowTitle = "claude · $sub" } catch { }
-    try { & claude @rest }
+    try { & $bin @rest }
     finally {
       if ($null -eq $old) { Remove-Item Env:CLAUDE_CODE_OAUTH_TOKEN -ErrorAction SilentlyContinue } else { $env:CLAUDE_CODE_OAUTH_TOKEN = $old }
       if ($null -eq $oldAcc) { Remove-Item Env:CA_ACCOUNT -ErrorAction SilentlyContinue } else { $env:CA_ACCOUNT = $oldAcc }

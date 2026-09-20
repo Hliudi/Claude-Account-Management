@@ -63,6 +63,7 @@ Already set up elsewhere? Copy everything over ssh instead: `ca push user@host-a
 | `ca <name> [args…]` | Run Claude Code as that account; args pass through to `claude` |
 | `ca <name> --continue` | Same, but first shows which conversation is about to resume (`-c` works too) |
 | `ca install` | Install the command, then add accounts interactively |
+| `ca setup-token` | Mint a token — works on machines that only have the VS Code extension |
 | `ca add <name>` | Store a token (hidden input, or piped on stdin) |
 | `ca ls` | List accounts, masked tokens, and the selected one |
 | `ca who` | Which account this session is spending — works inside a running session too |
@@ -86,6 +87,8 @@ Account names are yours to pick: letters, digits, `_`, `-`, as long as they aren
 | Windows + Git Bash | `ca` (bash) | `./ca install` |
 
 Both builds share one token directory, so either works on a Windows box.
+
+**Only the VS Code extension installed?** That works. The extension ships its own `claude` binary, and `ca` falls back to it when the CLI is not on `PATH` — so `ca setup-token`, `ca test` and `ca <name>` all run. Account switching inside the extension never needed the CLI in the first place.
 
 ## VS Code extension
 
@@ -127,7 +130,7 @@ Over Remote-SSH, run it on the remote machine — it writes `~/.vscode-server/da
 
 Worth knowing:
 
-- **Which account am I on?** `ca who`. Inside a running Claude Code session, type `!ca who` — the `!` prefix runs a shell command without leaving the session, and `ca` exports `CA_ACCOUNT` for it to read. The terminal tab is renamed too.
+- **Which account am I on?** `ca who`. Inside a running Claude Code session, type `!ca who` — the `!` prefix runs a shell command without leaving the session. It reports the account the token belongs to; where only `CA_ACCOUNT` is left in the environment it says "Launched as …", since an inherited value can outlive the session that set it. The terminal tab is renamed too.
 - **`--continue` asks first.** It prints the conversation's title, how long ago it was active, and the last message, then waits for Enter. `CA_YES=1` skips the prompt.
 - **`/usage` shows no limit bars after switching.** A `setup-token` credential lacks the `user:profile` scope the client needs for that view, so it falls back to a local cost summary. Use `ca usage` instead: it reads the limits from the API's rate-limit response headers, which work under any credential. It costs one Haiku token per account.
 - `--continue` resumes conversations from *that* machine; history doesn't travel between machines.

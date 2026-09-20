@@ -11,11 +11,15 @@ Instructions for a coding agent (Claude Code, Codex, …) asked to set up Claude
 | Step | Who |
 | --- | --- |
 | Clone and install | you |
-| Generate a token (`claude setup-token` — needs a browser login) | the human |
+| Generate a token (`ca setup-token`, or `claude setup-token` — needs a browser login) | the human |
 | Paste the token into `ca add` | the human, at their terminal |
 | Verify, select accounts, set up VS Code | you |
 
 **Never ask for a token to be pasted into the chat, and never write one into a file, a commit, or an environment variable you echo.** `ca add` reads it with hidden input. If you must run it yourself, pipe from a file the human wrote and delete that file afterwards.
+
+## If only the VS Code extension is installed
+
+That is enough. The extension ships its own `claude` binary and `ca` falls back to it, so `ca setup-token`, `ca test` and `ca <name>` work without the CLI. Switching accounts inside the extension never needed the CLI.
 
 ## Install
 
