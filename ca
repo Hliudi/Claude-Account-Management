@@ -99,6 +99,7 @@ t() {
                   zh='  ↳ 用的是 VS Code 扩展自带的二进制' ;;
     who_shell)    en='This session runs as %s'; zh='当前会话用的是 %s' ;;
     who_stale)    en='Launched as %s'; zh='启动时用的是 %s' ;;
+    who_unknown)  en='This session runs on a token that is not in %s'; zh='当前会话用的 token 不在 %s 里' ;;
     who_stale_n)  en='  ↳ from the inherited environment; a session resumed with plain `claude` would not be'
                   zh='  ↳ 来自继承的环境变量；如果这个会话是用普通 `claude` 恢复的，那它其实不是这个账号' ;;
     who_login)    en='This shell uses the /login account %s'; zh='当前 shell 用的是 /login 的账号 %s' ;;
@@ -411,21 +412,46 @@ cmd_setup_token() {
   exec "$bin" setup-token
 }
 
+# Claude Code scrubs CLAUDE_CODE_OAUTH_TOKEN from the shell it runs commands in, but the token is
+# still in the environment of the claude process itself — so walk up and read it there.
+session_token() {
+  local pid="${PPID:-}" depth=0 tok='' darwin=''
+  [[ "$(uname -s)" == Darwin ]] && darwin=1
+  while [[ -n "$pid" && "$pid" != 0 && $depth -lt 12 ]]; do
+    if [[ -r "/proc/$pid/environ" ]]; then
+      tok="$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | sed -n 's/^CLAUDE_CODE_OAUTH_TOKEN=//p' | head -1)"
+    elif [[ -n "$darwin" ]]; then
+      tok="$(ps -Eww -o command= -p "$pid" 2>/dev/null | tr ' ' '\n' | sed -n 's/^CLAUDE_CODE_OAUTH_TOKEN=//p' | head -1)"
+    fi
+    [[ -n "$tok" ]] && { printf '%s' "$tok"; return 0; }
+    pid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"
+    depth=$((depth + 1))
+  done
+  return 1
+}
+
+name_for_token() {
+  local n
+  for n in $(names); do
+    [[ "$1" == "$(cat "$(tok_file "$n")")" ]] && { printf '%s' "$n"; return 0; }
+  done
+  return 1
+}
+
 cmd_who() {
-  local cur tok n
+  local cur tok='' n=''
+  cur="$(current)"
   tok="${CLAUDE_CODE_OAUTH_TOKEN:-}"
+  [[ -n "$tok" ]] || tok="$(session_token || true)"
   if [[ -n "$tok" ]]; then
-    # the token is the ground truth: name the account it belongs to
-    for n in $(names); do
-      if [[ "$tok" == "$(cat "$(tok_file "$n")")" ]]; then
-        say "$(printf '%s●%s %s' "$A" "$X" "$(t who_shell "$B$n$X")")"
-        break
-      fi
-    done
+    if n="$(name_for_token "$tok")"; then
+      say "$(printf '%s●%s %s' "$A" "$X" "$(t who_shell "$B$n$X")")"
+    else
+      say "$(printf '%s●%s %s' "$A" "$X" "$(t who_unknown "$CA_DIR")")"
+    fi
   elif [[ -n "${CA_ACCOUNT:-}" ]]; then
-    # CA_ACCOUNT survives in child shells even where the token was scrubbed, so it can be stale
     say "$(printf '%s●%s %s' "$A" "$X" "$(t who_stale "$B$CA_ACCOUNT$X")")"
-    note "$(t who_stale_n)"
+    [[ "$CA_ACCOUNT" == "$cur" ]] || note "$(t who_stale_n)"
   else
     local email='' bin
     bin="$(claude_bin 2>/dev/null)" || bin=''
@@ -437,7 +463,6 @@ print(d.get("email") or "")' 2>/dev/null || true)"
     fi
     say "$(printf '%s●%s %s' "$A" "$X" "$(t who_login "$B${email:-/login}$X")")"
   fi
-  cur="$(current)"
   [[ -z "$cur" ]] || note "$(t who_vscode "$cur")"
 }
 
