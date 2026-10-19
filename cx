@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Two-letter entry point for the Codex account manager.
+exec bash "$(dirname "${BASH_SOURCE[0]}")/ca" codex "$@"

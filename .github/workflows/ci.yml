@@ -6,14 +6,27 @@ on:
   pull_request:
 
 jobs:
+  codex:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Codex account switching (synthetic credentials only)
+        run: python -m unittest discover -s tests -v
+
   bash:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: syntax
-        run: bash -n ca
+        run: bash -n ca && bash -n cx
       - name: shellcheck
-        run: shellcheck --severity=warning ca
+        run: shellcheck --severity=warning ca cx
       - name: smoke test
         run: |
           export HOME="$(mktemp -d)"

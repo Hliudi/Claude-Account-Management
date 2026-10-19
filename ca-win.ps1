@@ -15,7 +15,27 @@ $BinDir = if ($env:CA_BIN_DIR) { $env:CA_BIN_DIR }
           else { Join-Path (Join-Path $HOME '.local') 'bin' }
 $Self     = $PSCommandPath
 $SrcDir   = Split-Path -Parent $Self
-$Reserved = @('install','add','ls','list','test','rm','update','push','use','vscode','who','whoami','usage','setup-token','help')
+$Reserved = @('install','add','ls','list','test','rm','update','push','use','vscode','who','whoami','usage','setup-token','help','codex')
+
+# Codex credentials and commands are independent of the existing Claude token flow.
+if ($args.Count -gt 0 -and $args[0] -eq 'codex') {
+  $helper = Join-Path $SrcDir 'codex_accounts.py'
+  if (-not (Test-Path -LiteralPath $helper)) { throw 'Missing codex_accounts.py; reinstall ca from the complete checkout.' }
+  $codexArgs = @()
+  if ($args.Count -gt 1) { $codexArgs = @($args[1..($args.Count - 1)]) }
+  $python = $null
+  foreach ($candidate in @('python3', 'python', 'py')) {
+    $command = Get-Command $candidate -ErrorAction SilentlyContinue
+    if (-not $command) { continue }
+    $prefix = @()
+    if ($candidate -eq 'py') { $prefix = @('-3') }
+    & $command.Source @prefix -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' 2>$null
+    if ($LASTEXITCODE -eq 0) { $python = $command.Source; break }
+  }
+  if (-not $python) { throw 'Codex account management requires Python 3.11+ on PATH. Claude commands do not require Python.' }
+  & $python @prefix $helper @codexArgs
+  exit $LASTEXITCODE
+}
 
 # --- look & feel ---------------------------------------------------------------------------------
 $Color = (-not $env:NO_COLOR) -and $Host.UI.SupportsVirtualTerminal -ne $false
@@ -390,12 +410,15 @@ function Cmd-Install {
       Head (T installed (Join-Path $BinDir 'ca.cmd')); Note (T via_repo $Self)
     } else {
       Copy-Item -LiteralPath $Self -Destination $impl -Force
+      Copy-Item -LiteralPath (Join-Path $SrcDir 'codex_accounts.py') -Destination (Join-Path $BinDir 'codex_accounts.py') -Force
       Head (T installed (Join-Path $BinDir 'ca.cmd'))
     }
   }
   # the shim stays ASCII and uses %~dp0, so non-ASCII user names cannot break cmd parsing
   $cmd = "@powershell -NoProfile -ExecutionPolicy Bypass -File `"%~dp0ca-win.ps1`" %*`r`n"
   [IO.File]::WriteAllText((Join-Path $BinDir 'ca.cmd'), $cmd, (New-Object System.Text.ASCIIEncoding))
+  $cxCmd = "@powershell -NoProfile -ExecutionPolicy Bypass -File `"%~dp0ca-win.ps1`" codex %*`r`n"
+  [IO.File]::WriteAllText((Join-Path $BinDir 'cx.cmd'), $cxCmd, (New-Object System.Text.ASCIIEncoding))
 
   # write PATH through the registry to keep %VAR% entries intact (SetEnvironmentVariable expands them)
   $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
@@ -429,7 +452,8 @@ function Cmd-Install {
 
 function Show-Usage {
   $cur = Get-Current
-  Write-Output "$A✳$X ${B}ca$X — switch between your own Claude subscription accounts`n"
+  Write-Output "$A✳$X ${B}ca$X — manage your own Claude and Codex accounts`n"
+  Write-Output "  ${B}cx$X [command]              manage Codex accounts (cx help)"
   Write-Output "  ${B}ca <name>$X [claude args]   run Claude Code as that account, e.g. ca work --continue"
   Write-Output "  ${B}ca install$X                install the command, then add accounts interactively"
   Write-Output "  ${B}ca setup-token$X            mint a token (works with only the VS Code extension)"

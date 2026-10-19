@@ -9,7 +9,7 @@ set -euo pipefail
 
 CA_DIR="${CA_DIR:-$HOME/.config/claude-accts}"
 BIN_DIR="${CA_BIN_DIR:-$HOME/.local/bin}"
-RESERVED=" install add ls list test rm update push use vscode who whoami usage setup-token help "
+RESERVED=" install add ls list test rm update push use vscode who whoami usage setup-token help codex "
 
 # --- resolve our own path (macOS ships no readlink -f) --------------------------------------------
 realpath_() {
@@ -22,6 +22,19 @@ realpath_() {
 }
 SELF="$(realpath_ "${BASH_SOURCE[0]}")"
 SRC_DIR="$(dirname "$SELF")"
+
+# Keep the Claude path dependency-free; only Codex management needs Python.
+if [[ "${1:-}" == codex ]]; then
+  shift
+  [[ -f "$SRC_DIR/codex_accounts.py" ]] || { echo 'Missing codex_accounts.py; reinstall ca from the complete checkout.' >&2; exit 1; }
+  for python in python3 python; do
+    if command -v "$python" >/dev/null && "$python" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
+      exec "$python" "$SRC_DIR/codex_accounts.py" "$@"
+    fi
+  done
+  echo 'Codex account management requires Python 3.11+ on PATH. Claude commands do not require Python.' >&2
+  exit 1
+fi
 
 # --- look & feel ---------------------------------------------------------------------------------
 if [[ -t 1 && -z "${NO_COLOR:-}" && "${TERM:-dumb}" != dumb ]]; then
@@ -176,9 +189,12 @@ cmd_install() {
       head_ "$(t installed "$BIN_DIR/ca")"; note "$(t via_repo "$SELF")"
     else
       cp "$SELF" "$BIN_DIR/ca"; chmod 755 "$BIN_DIR/ca"
+      cp "$SRC_DIR/codex_accounts.py" "$BIN_DIR/codex_accounts.py"
       head_ "$(t installed "$BIN_DIR/ca")"
     fi
   fi
+  if [[ "$SRC_DIR/cx" != "$BIN_DIR/cx" ]]; then cp "$SRC_DIR/cx" "$BIN_DIR/cx"; fi
+  chmod 755 "$BIN_DIR/cx"
   add_path_line
   note "$(t token_dir "$CA_DIR")"
   command -v claude >/dev/null || note "$(t no_claude)"
@@ -264,6 +280,8 @@ cmd_push() {
   stage="$(mktemp -d)"; trap 'rm -rf "$stage"' RETURN
   chmod 700 "$stage"; mkdir -p "$stage/tokens"
   cp "$SELF" "$stage/ca"
+  cp "$SRC_DIR/cx" "$stage/cx"
+  cp "$SRC_DIR/codex_accounts.py" "$stage/codex_accounts.py"
   cp "$CA_DIR"/*.token "$stage/tokens/" 2>/dev/null || true
   for h in "$@"; do
     # straight through ssh: tokens never touch a third party
@@ -480,7 +498,8 @@ cmd_run() {
 
 usage() {
   local cur; cur="$(current)"
-  printf '%s✳%s %sca%s — switch between your own Claude subscription accounts\n\n' "$A" "$X" "$B" "$X"
+  printf '%s✳%s %sca%s — manage your own Claude and Codex accounts\n\n' "$A" "$X" "$B" "$X"
+  printf '  %scx%s [command]              manage Codex accounts (cx help)\n' "$B" "$X"
   printf '  %sca <name>%s [claude args]   run Claude Code as that account, e.g. ca work --continue\n' "$B" "$X"
   printf '  %sca install%s                install the command, then add accounts interactively\n' "$B" "$X"
   printf '  %sca setup-token%s            mint a token (works with only the VS Code extension)\n' "$B" "$X"

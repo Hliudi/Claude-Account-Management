@@ -91,7 +91,18 @@ ca push user@host          # copies script + tokens over ssh, installs on the fa
 
 Otherwise repeat the install steps there; tokens are per machine and the human pastes them again.
 
-## Rules
+## Codex account management
+
+The same installation supports `cx ...` (also `ca codex ...`), implemented in `codex_accounts.py` (Python 3.11+, standard library). Existing `ca ...` commands continue to manage Claude independently.
+
+- `cx add <name>` saves the current file-based login; `cx login <name>` defaults to official device-code login in an isolated temporary home. It displays the returned email and requires y/yes confirmation before saving; missing email, cancellation or EOF must not overwrite accounts. `--browser` explicitly selects browser callback login; `--device-auth` remains supported. `--force` does not bypass confirmation. API-key login has no email and keeps its stdin flow. Browser/device login, save confirmation and any API-key input belong to the human at their terminal. Never request credentials in chat.
+- `cx use <name>` selects only the isolated CLI account. `cx <name> [args...]` launches with child-only CODEX_HOME/CODEX_SQLITE_HOME, file auth and independent database/log overrides. Interactive CLI uses --no-daemon. Never write the App auth/config, globally export CODEX_HOME, share writable state via links or connect to the App daemon. Exit other cx sessions before switching; App may stay open.
+- `cx use --off` restores only the prior isolated CLI login. CA_CODEX_DIR defaults to ~/.config/codex-accts; CX_HOME defaults to sibling codex-cli. CX_APP_HOME (inherited CODEX_HOME or ~/.codex) is the read-only import source. The three paths must be non-nested. Old shared switch-state.json backups must never be restored into the App automatically. Named accounts remain reusable.
+- cx init (automatic on first use) makes independent copies of config, instructions, skills/rules and session history once; use SQLite backup for history databases and redirect rollout paths to copied transcripts. Do not copy App auth, daemon state, browser sessions, sandbox secrets or plugin logins. No live App/CLI synchronization is promised. cx add saves only an existing isolated CLI login.
+- File storage and private database/log paths are scoped CLI overrides; copied and App config remain untouched. Do not change organization policies or user environment. Do not upload, log, commit or share auth files or switch backups.
+- Verify changes with `python -m unittest discover -s tests -v`; tests use only synthetic credentials and temporary homes. Never switch, log out or make paid model calls with the user's live accounts merely to test code.
+
+## Claude account rules
 
 - Don't put tokens in the repo, a shared filesystem, a container image, or a cloud sync folder. `ca` refuses a `CA_DIR` inside a git checkout.
 - Don't set `CLAUDE_CODE_OAUTH_TOKEN` in `settings.json`, a shell rc, or CI config; `ca` scopes it to one command on purpose.

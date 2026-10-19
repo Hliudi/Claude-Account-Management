@@ -1,2 +1,8 @@
 *.token
 .env
+*.auth.json
+auth.json
+switch-state.json
+cli-switch-state.json
+__pycache__/
+*.pyc
