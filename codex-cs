@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source_path="${BASH_SOURCE[0]}"
+while [[ -L "$source_path" ]]; do
+  link="$(readlink "$source_path")"
+  [[ "$link" == /* ]] && source_path="$link" || source_path="$(dirname "$source_path")/$link"
+done
+exec "$(dirname "$source_path")/cs" --native-cli "$@"

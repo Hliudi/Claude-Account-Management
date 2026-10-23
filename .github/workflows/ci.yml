@@ -5,8 +5,11 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
-  codex:
+  accounts:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
@@ -16,45 +19,46 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Codex account switching (synthetic credentials only)
-        run: python -m unittest discover -s tests -v
+      - name: Isolated account tests
+        run: python -m unittest discover -s tests -p test_codex_accounts.py -v
 
-  bash:
+  sessions:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ['3.11', '3.12']
     steps:
       - uses: actions/checkout@v4
-      - name: syntax
-        run: bash -n ca && bash -n cx
-      - name: shellcheck
-        run: shellcheck --severity=warning ca cx
-      - name: smoke test
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Session handoff and credential tests
+        run: python -m unittest discover -s tests -v
+      - name: Shell syntax and lint
         run: |
-          export HOME="$(mktemp -d)"
-          mkdir -p "$HOME/bin" && printf '#!/bin/bash\necho ok\n' > "$HOME/bin/claude"
-          chmod +x "$HOME/bin/claude"
-          export PATH="$HOME/.local/bin:$HOME/bin:$PATH"   # the rc line ca writes is not read here
-          ./ca install < /dev/null
-          echo sk-ant-oat01-testtoken | ca add work
-          ca ls | grep -q work
-          ca use work && ca ls | grep -q '^\*'
-          ca vscode > /dev/null && "$HOME/.local/bin/ca-vscode-wrapper" env | grep -q CLAUDE_CODE_OAUTH_TOKEN
-          ca rm work
+          for script in cs cx codex-cs; do bash -n "$script"; done
+          shellcheck --severity=warning cs cx codex-cs
+      - name: Launcher smoke tests
+        run: |
+          ./cs --help
+          ./cx help
+          ./cx install
+          "$HOME/.local/bin/cx" help
 
   powershell:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - name: parse
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Parse and install launcher
         shell: powershell
         run: |
-          $e = $null
-          [void][System.Management.Automation.Language.Parser]::ParseFile("$PWD\ca-win.ps1", [ref]$null, [ref]$e)
-          if ($e) { $e | ForEach-Object { Write-Error $_.Message }; exit 1 }
-      - name: install and add
-        shell: powershell
-        run: |
-          .\ca-win.ps1 install
-          "sk-ant-oat01-testtoken" | .\ca-win.ps1 add work
-          .\ca-win.ps1 ls
-          .\ca-win.ps1 use work
-          .\ca-win.ps1 rm work
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile("$PWD\cx.ps1", [ref]$null, [ref]$errors)
+          if ($errors) { $errors | ForEach-Object { Write-Error $_.Message }; exit 1 }
+          .\cx.ps1 install
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$env:LOCALAPPDATA\codex-accounts\bin\cx.cmd" help
+          exit $LASTEXITCODE

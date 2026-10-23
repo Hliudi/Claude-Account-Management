@@ -403,11 +403,11 @@ class AccountsTest(unittest.TestCase):
         repo = Path(ca.__file__).parent
         commands = []
         if os.name == "nt":
-            commands.append(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(repo / "ca-win.ps1")])
+            commands.append(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(repo / "cx.ps1")])
             if shutil.which("pwsh"):
-                commands.append(["pwsh", "-NoProfile", "-File", str(repo / "ca-win.ps1")])
+                commands.append(["pwsh", "-NoProfile", "-File", str(repo / "cx.ps1")])
         else:
-            commands.append(["bash", str(repo / "ca")])
+            commands.append(["bash", str(repo / "cx")])
         for command in commands:
             for args, expected in (
                 (["help"], "Manage your own Codex accounts"),
@@ -418,7 +418,7 @@ class AccountsTest(unittest.TestCase):
                 (["rm", "terminal"], "Removed Codex account: terminal"),
                 (["use", "--off"], "Restored the Codex login"),
             ):
-                result = subprocess.run(command + ["codex"] + args, capture_output=True, text=True)
+                result = subprocess.run(command + args, capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn(expected, result.stdout)
                 self.assertNotIn("fake-access", result.stdout + result.stderr)

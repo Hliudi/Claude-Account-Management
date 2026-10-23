@@ -1,110 +1,46 @@
-# Setting up `ca` on this machine
+# Codex Account Manager
 
-Instructions for a coding agent (Claude Code, Codex, …) asked to set up Claude account switching here. Human-facing docs: [README.md](README.md).
+This repository provides two independent tools:
 
-## What this tool does
+- `cs`: official/proxy provider selection and shared-session handoff on Linux.
+- `cx`: isolated official Codex accounts on Linux, macOS and Windows.
 
-`ca <name>` runs Claude Code with `CLAUDE_CODE_OAUTH_TOKEN` set to a stored token, for that one command. Tokens come from `claude setup-token` and live in `~/.config/claude-accts` (mode 600). Nothing else on the machine is reconfigured.
+Read `README.md` and `README.zh-CN.md` for usage. Python 3.11+ and the standard library are required.
 
-## What you can do, and what the human must do
+## Credentials
 
-| Step | Who |
-| --- | --- |
-| Clone and install | you |
-| Generate a token (`ca setup-token`, or `claude setup-token` — needs a browser login) | the human |
-| Paste the token into `ca add` | the human, at their terminal |
-| Verify, select accounts, set up VS Code | you |
+- Never request API keys, tokens or auth files in chat. Account setup uses hidden terminal input or official browser/device login.
+- Never print credentials, write them into the repository, commit them or include them in diagnostics. Store credentials outside Git with owner-only permissions.
+- Use only synthetic credentials and temporary homes in tests. Do not make paid requests or change live account logins merely to test code.
+- Preserve the user's existing configuration, account files, unrelated processes and unfinished work.
 
-**Never ask for a token to be pasted into the chat, and never write one into a file, a commit, or an environment variable you echo.** `ca add` reads it with hidden input. If you must run it yourself, pipe from a file the human wrote and delete that file afterwards.
+## Shared sessions
 
-## If only the VS Code extension is installed
+- `cs_accounts.py` handles configuration, arguments, the picker and launcher installation.
+- `cs_session.py` coordinates managed terminal writers through a local socket and PTY.
+- `cs_daemon.py` releases shared daemon writers through archive/unarchive, preserving session IDs and archive states. Keep recovery journals until restoration succeeds.
+- `cs_storage.py` handles private atomic writes and database discovery.
+- Never remove a live writer-lock file or stop an entire shared daemon to take over one conversation. Check actual lock ownership before and after handoff.
+- Interactive managed writers use `--no-daemon`; both official and proxy resume commands retain the original history and explicitly choose the provider.
+- Changing a provider must scope its key and overrides to the child process. Keep the original official auth/config and the existing HUD launcher.
+- Poe uses the Responses API preset. Local mock tests do not establish compatibility with every live bot or API account.
 
-That is enough. The extension ships its own `claude` binary and `ca` falls back to it, so `ca setup-token`, `ca test` and `ca <name>` work without the CLI. Switching accounts inside the extension never needed the CLI.
+## Isolated accounts
 
-## Install
+- `codex_accounts.py` implements `cx`; `cx`, `cx.ps1` and `cx.cmd` are standalone launchers.
+- `cx login` defaults to device-code login in a temporary home. Display the returned email and require y/yes before saving; cancellation, EOF or missing email must not overwrite an account. `--force` does not bypass confirmation. API-key login retains its stdin flow.
+- `CA_CODEX_DIR`, `CX_HOME` and `CX_APP_HOME` must be separate and non-nested. The import source is read-only; never restore legacy shared-login backups into it.
+- Initialize with independent copies of configuration/history and SQLite backup, redirecting copied rollout paths. Do not import App credentials, daemon state, browser sessions, sandbox secrets or plugin logins. Import is a one-time snapshot, not live synchronization.
+- Scope `CODEX_HOME`, `CODEX_SQLITE_HOME`, file credential storage and database/log overrides to the isolated child. Do not connect `cx` to the App daemon or change organization policies.
 
-```bash
-git clone https://github.com/Hliudi/Claude-Account-Management.git ~/.claude-accts
-~/.claude-accts/ca install </dev/null      # </dev/null keeps it non-interactive
-export PATH="$HOME/.local/bin:$PATH"       # the rc line only applies to new shells
-ca ls                                       # confirm it runs
-```
-
-Windows (PowerShell):
-
-```powershell
-git clone https://github.com/Hliudi/Claude-Account-Management.git $HOME\.claude-accts
-& $HOME\.claude-accts\ca-win.ps1 install
-```
-
-Then tell the human, verbatim:
-
-> Run `claude setup-token` once per account, then `ca add <name>` and paste each token when prompted (input stays hidden).
-
-## Verify
+## Validation
 
 ```bash
-ca test            # one real API call per account; ✓ means the token works
+python3 -m unittest discover -s tests -v
 ```
 
-A `401 OAuth access token is invalid` means the token is expired or was mistyped — the human regenerates it with `claude setup-token`.
+Run all tests on Linux. On macOS/Windows run `python -m unittest discover -s tests -p test_codex_accounts.py -v`; shared-session tests require Linux APIs.
 
-## Which account is in use
+Set `CS_TEST_CODEX_BIN` to an installed Codex executable to include real CLI/HUD terminal tests. These use a local mock Responses server, temporary homes and synthetic keys. Verify bidirectional handoff, history preservation, tool execution, daemon recovery and `exec resume` when changing those behaviors.
 
-```bash
-ca who      # this shell / session, plus the account selected for VS Code
-```
-
-`ca <name>` exports `CA_ACCOUNT`, so `ca who` also answers correctly from inside a running Claude session.
-
-```bash
-ca usage           # 5-hour and weekly limits per account, read from API response headers
-```
-
-`/usage` inside Claude cannot show limit bars under a `setup-token` credential (it lacks the `user:profile` scope) — expected, not a misconfiguration. Use `ca usage`.
-
-## Everyday use
-
-```bash
-ca work --continue      # resume the last conversation on this machine as `work`
-ca research             # new conversation as `research`
-```
-
-Conversation history is local to the machine (`~/.claude/`), not tied to the account, so switching accounts keeps `--continue` working.
-
-## VS Code extension (optional)
-
-```bash
-ca vscode --apply       # installs the wrapper and configures claudeCode.claudeProcessWrapper
-ca use research         # extension uses `research` for new and reopened chats
-```
-
-Then tell the human to run **Developer: Reload Window** once. Over Remote-SSH, run the commands on the remote machine. On Windows, skip `ca vscode`: `ca use <name>` is enough, followed by a full VS Code restart.
-
-## Deploying to more machines
-
-From a machine that already has the tokens, with ssh access to the target:
-
-```bash
-ca push user@host          # copies script + tokens over ssh, installs on the far side
-```
-
-Otherwise repeat the install steps there; tokens are per machine and the human pastes them again.
-
-## Codex account management
-
-The same installation supports `cx ...` (also `ca codex ...`), implemented in `codex_accounts.py` (Python 3.11+, standard library). Existing `ca ...` commands continue to manage Claude independently.
-
-- `cx add <name>` saves the current file-based login; `cx login <name>` defaults to official device-code login in an isolated temporary home. It displays the returned email and requires y/yes confirmation before saving; missing email, cancellation or EOF must not overwrite accounts. `--browser` explicitly selects browser callback login; `--device-auth` remains supported. `--force` does not bypass confirmation. API-key login has no email and keeps its stdin flow. Browser/device login, save confirmation and any API-key input belong to the human at their terminal. Never request credentials in chat.
-- `cx use <name>` selects only the isolated CLI account. `cx <name> [args...]` launches with child-only CODEX_HOME/CODEX_SQLITE_HOME, file auth and independent database/log overrides. Interactive CLI uses --no-daemon. Never write the App auth/config, globally export CODEX_HOME, share writable state via links or connect to the App daemon. Exit other cx sessions before switching; App may stay open.
-- `cx use --off` restores only the prior isolated CLI login. CA_CODEX_DIR defaults to ~/.config/codex-accts; CX_HOME defaults to sibling codex-cli. CX_APP_HOME (inherited CODEX_HOME or ~/.codex) is the read-only import source. The three paths must be non-nested. Old shared switch-state.json backups must never be restored into the App automatically. Named accounts remain reusable.
-- cx init (automatic on first use) makes independent copies of config, instructions, skills/rules and session history once; use SQLite backup for history databases and redirect rollout paths to copied transcripts. Do not copy App auth, daemon state, browser sessions, sandbox secrets or plugin logins. No live App/CLI synchronization is promised. cx add saves only an existing isolated CLI login.
-- File storage and private database/log paths are scoped CLI overrides; copied and App config remain untouched. Do not change organization policies or user environment. Do not upload, log, commit or share auth files or switch backups.
-- Verify changes with `python -m unittest discover -s tests -v`; tests use only synthetic credentials and temporary homes. Never switch, log out or make paid model calls with the user's live accounts merely to test code.
-
-## Claude account rules
-
-- Don't put tokens in the repo, a shared filesystem, a container image, or a cloud sync folder. `ca` refuses a `CA_DIR` inside a git checkout.
-- Don't set `CLAUDE_CODE_OAUTH_TOKEN` in `settings.json`, a shell rc, or CI config; `ca` scopes it to one command on purpose.
-- Only for accounts the human owns, switched by hand. Never build automatic rotation or account pooling on top of this — that breaks the Anthropic usage terms.
-- Nothing here needs sudo.
+Run Bash syntax checks for `cs`, `cx` and `codex-cs`; keep Windows launcher parsing and platform-specific CI working. Preserve the MIT license.

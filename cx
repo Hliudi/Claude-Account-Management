@@ -1,3 +1,30 @@
 #!/usr/bin/env bash
-# Two-letter entry point for the Codex account manager.
-exec bash "$(dirname "${BASH_SOURCE[0]}")/ca" codex "$@"
+set -euo pipefail
+source_path="${BASH_SOURCE[0]}"
+while [[ -L "$source_path" ]]; do
+  link="$(readlink "$source_path")"
+  if [[ "$link" == /* ]]; then
+    source_path="$link"
+  else
+    source_path="$(dirname "$source_path")/$link"
+  fi
+done
+source_dir="$(cd "$(dirname "$source_path")" && pwd -P)"
+if [[ "${1:-}" == install ]]; then
+  bin_dir="${CX_BIN_DIR:-$HOME/.local/bin}"
+  mkdir -p "$bin_dir"
+  if [[ -e "$bin_dir/cx" && ! -L "$bin_dir/cx" ]]; then
+    echo "Refusing to replace $bin_dir/cx: it is not a symlink." >&2
+    exit 1
+  fi
+  ln -sfn "$source_dir/cx" "$bin_dir/cx"
+  echo "Installed $bin_dir/cx. Add $bin_dir to PATH if needed."
+  exit 0
+fi
+for python in python3 python "$HOME/miniconda3/envs/tan-tools/bin/python3"; do
+  if command -v "$python" >/dev/null && "$python" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
+    exec "$python" "$source_dir/codex_accounts.py" "$@"
+  fi
+done
+echo 'cx requires Python 3.11+.' >&2
+exit 1

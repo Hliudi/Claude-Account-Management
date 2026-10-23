@@ -1,196 +1,114 @@
-<div align="center">
+# Codex Account Manager
 
-# ca
+切换 Codex 官方登录和 API 网关，在同一个会话中接着开发；也可以为多个官方账号保留独立的 CLI 环境。需要 Python 3.11+，仅依赖标准库。
 
-**在同一个工具里管理你自己的多个 Claude 或 Codex 账号，支持终端和 VS Code。**
+[English](README.md) · [Agent 开发说明](AGENTS.md) · [MIT 许可证](LICENSE)
 
-[![ci](https://github.com/Hliudi/Claude-Account-Management/actions/workflows/ci.yml/badge.svg)](https://github.com/Hliudi/Claude-Account-Management/actions/workflows/ci.yml)
-[![license](https://img.shields.io/badge/license-MIT-black)](LICENSE)
-[![platform](https://img.shields.io/badge/platform-linux%20%C2%B7%20macOS%20%C2%B7%20windows-black)](#支持的系统)
+| 命令 | 用途 | 系统 |
+| --- | --- | --- |
+| `cs` | 官方登录、Responses API 网关之间交接同一会话 | Linux |
+| `cx` | 在隔离的 CLI 目录中手动切换官方账号 | Linux、macOS、Windows |
 
-[快速开始](#快速开始) · [Codex](#codex-多账号) · [命令](#命令) · [VS Code](#vs-code-扩展) · [故障排查](#故障排查) · [给 agent 看的](AGENTS.md) · [English](README.md)
+## 安装并使用 cs
 
-</div>
+克隆或下载仓库后，在仓库目录运行：
 
----
+```bash
+./cs install
+source ~/.bashrc
+cs add gateway
+cs use gateway
+cs resume
+```
 
-Claude 继续使用原来的 `ca ...` 命令；Codex 使用独立的 **`cx ...`** 命令。原来的 `ca codex ...` 写法也可以继续使用。两套账号分别保存和选择，只用其中一种也可以。下面的 Claude 用法保持有效，Codex 请看[Codex 多账号](#codex-多账号)。
+添加网关时选择 proxy，输入 API 根地址、API key（隐藏输入）和模型名。网关必须支持 Responses API。账号保存在仓库外的 `~/.config/codex-switch`，采用仅本人可读写的权限。
 
-## Codex 多账号
+安装器在 `~/.local/bin` 中建立 `cs` 和 `codex` 交接入口，并保留原来的 Codex/HUD 启动器。已有 Git 工作区安装会直接使用更新后的代码，无需重新安装。
 
-`cx` 现在使用**独立的 CLI 目录**。Codex App、IDE 扩展和普通 `codex` 命令继续使用原来的登录；`cx` 只给自己启动的 CLI 设置 `CODEX_HOME`，不改用户环境变量，也不替换 App 的 `auth.json`。
+## 轮流接着开发
 
-需要 **Codex CLI** 和 **Python 3.11+**，只依赖 Python 标准库。已有 Git 安装立即使用当前代码；下载文件安装时保留 `cx`、`cx.cmd` 和 `codex_accounts.py`，运行 `install.cmd`。
+```bash
+codex resume                     # 官方账号继续聊天
+cs resume                        # 选择同一会话，请求旧端释放并接管
+# 在 cs 中输入 /exit，释放写入权
+codex resume                     # 选择同一会话，继续读取新增的历史
+```
 
-```powershell
-cx init                         # 可选：现在初始化独立目录，首次使用也会自动初始化
-cx login work                   # 默认设备码登录，核对邮箱，输入 y 保存
-cx login personal               # 再保存另一个账号，建议在无痕窗口授权
+两边都可以使用完整 session ID 或 `cs sessions` 列出的编号。`resume --last` 跨 provider 查找当前目录最新会话；加 `--all` 可以搜索其他目录。`cs native resume` 也是官方入口。编号绑定到当前 home 和数据库，切换存储目录后重新运行 `cs sessions`。
+
+受管理终端使用独立的本地写入进程。接管时先请求旧终端正常退出，确认锁释放后再启动新写入者。session ID 和已保存历史保持连续，`/exit` 释放写入权。
+
+共享 daemon（包括连接它的旧 CLI 或 App）持锁时，通过服务端 API 临时归档并立即恢复目标会话及其子会话，关闭旧写入者后接管。原归档状态保存在恢复日志中；中途失败后重试同一命令，会先进行恢复。旧窗口可能短暂收到归档通知，其他无关会话和 daemon 继续运行。
+
+不连接 daemon、也没有通过新入口启动的旧独立终端，需要先 `/exit` 一次。接管会中断目标会话及其子会话正在运行的任务；未发送草稿不属于已保存历史。如果交互弹窗或自定义快捷键阻止退出，需要在旧端手动 `/exit`。暂不接管远程 daemon。
+
+## 常用命令
+
+| 命令 | 说明 |
+| --- | --- |
+| `cs` | 使用当前选中的账号开始聊天 |
+| `cs add <名称>` | 交互添加官方或网关账号 |
+| `cs add --force <名称>` | 更新账号，取消输入不会覆盖旧内容 |
+| `cs ls`、`cs who`、`cs use <名称>` | 列出、查看、选择账号 |
+| `cs rm <名称>` | 删除已保存账号 |
+| `cs sessions [数量] [--all]` | 列出会话；`--all` 也显示归档和子会话 |
+| `cs resume [id]`、`cs continue` | 选择会话，或继续当前目录最新会话 |
+| `cs <名称> [参数...]` | 临时使用指定账号 |
+| `cs exec resume <id> "任务"` | 非交互接续，同样检查写入权 |
+| `cs native [参数...]` | 明确使用官方登录 |
+
+`cs run <名称> exec resume ...` 和 `codex exec resume ...` 也支持交接。提示词以 `-` 开头时使用 `--` 分隔。选择器支持中文筛选、方向键、PageUp/PageDown，Esc 或 Ctrl+C 取消。
+
+会话数据库依次采用 `config.toml` 中的 `sqlite_home`、`CODEX_SQLITE_HOME`、`CODEX_HOME`。恢复时应在这些位置配置数据库目录，不使用临时 `-c sqlite_home` 覆盖，以便列表与实际写入者保持一致。
+
+## 添加 Poe
+
+```bash
+cs add poe --preset poe
+cs use poe
+cs resume
+```
+
+按提示隐藏输入 key，并指定 Poe bot/model 名称。预设采用 `https://api.poe.com/v1`、Responses 协议、独立 API key 和 HTTP 流式请求。[Poe 官方文档](https://creator.poe.com/api-reference/createResponse)支持流式 Responses 和 function tools；具体 bot 的工具、参数及上下文限制仍需实测，可用 `--model` 或 `-c model_context_window=...` 按实际模型调整。
+
+## 用 cx 隔离多个官方账号
+
+Linux/macOS 在仓库目录运行 `./cx install`，按提示把安装目录加入 PATH。Windows 运行 `install.cmd` 后打开新终端，或直接使用仓库中的 `cx.cmd`。
+
+```bash
+cx init
+cx login personal
+cx login work
 cx ls
-cx work                         # 使用 work 启动 CLI 新聊天
-cx personal resume --last        # 使用 personal 接着本项目最近的聊天
-# cx personal resume            # 打开历史选择器
+cx personal resume --last
+cx work resume --last
 ```
 
-初始化会把原有配置、全局说明、skills、rules、profile 配置和本地会话记录复制到 CLI 目录。会话数据库通过 SQLite 一致性备份复制，其中的会话文件路径会改指向 CLI 副本。不会导入 App 的登录凭据、后台进程状态、沙箱密钥、浏览器状态和插件登录。交互式 CLI 使用 `--no-daemon`，避免连接 App 的共享后台。
+默认使用官方设备码登录，显示返回的邮箱并要求确认后才保存；`--browser` 可选择浏览器登录，`--with-api-key` 通过 stdin 读取 API key。不要把凭据贴到聊天或 issue 中。
 
-所有 `cx` 账号使用同一个独立 CLI 目录，因此切换 CLI 账号后仍保留配置和本地上下文。要继续旧聊天，请使用 `resume`；单独运行 `cx work` 是新聊天。来自 App 的内容是**初始化时的一次性快照**，不是双向同步：之后 App 的新消息不会自动出现在 CLI，CLI 的新消息也不会自动回写 App。不同客户端版本、正在写入的会话或账号专属服务可能影响个别导入聊天的恢复；也不保证跨账号命中缓存或节省额度。
+所有 `cx` 账号共享一个隔离 CLI 目录。初始化仅从原 home 复制一次配置、说明、skills/rules 和会话历史；SQLite 使用一致性备份，并重定向复制后的会话路径。不导入 App 登录、daemon 状态、浏览器会话或插件凭据，之后也不会与 App 实时同步。
 
-| 命令 | 功能 |
-| --- | --- |
-| `cx init` | 初始化独立 CLI 目录并显示两个目录位置；首次使用自动执行 |
-| `cx login <名字>` | 默认官方设备码登录，显示实际返回的邮箱，输入 y/yes 才保存 |
-| `cx login <名字> --browser` | 显式使用浏览器回调登录，仍需要邮箱确认 |
-| `cx login <名字> --device-auth` | 显式指定设备码登录，与默认相同 |
-| `cx login <名字> --with-api-key` | 从标准输入读取 API key；这种登录无法显示邮箱 |
-| `cx add <名字>` | 保存当前独立 CLI 的登录，不会自动保存 App 主账号；`save` 是别名 |
-| `cx ls` / `cx who` | 列出账号 / 查看独立 CLI 当前账号 |
-| `cx use <名字>` | 只选择之后 `cx` 启动时使用的 CLI 账号，不影响 App 和普通 codex |
-| `cx <名字> [参数…]` | 选择账号后启动本地 CLI，转交 Codex 参数 |
-| `cx use --off` | 恢复第一次独立 CLI 切换前的登录；最初无登录则清除 CLI 凭据，不改 App |
-| `cx rm <名字>` | 删除保存的账号；管理中的当前账号需要先切走或恢复 |
-| `cx test` | 在独立目录中检查本地 login status，不调用模型，也不验证服务端是否仍接受凭据 |
+`cx add <名称>` 保存当前隔离登录；`cx use <名称>` 切换账号；`cx use --off` 恢复之前的隔离登录；`cx who` 查看当前账号；`cx test` 只检查本地登录状态；`cx rm <名称>` 删除未选中的账号。切换前退出其他 `cx` 会话即可。
 
-切换 CLI 账号前退出旧 `cx` 会话即可，App 可以继续开着。`cx` 不转交启动 App、连接共享后台/远程服务、覆盖凭据/数据库/日志目录等命令，避免脱离隔离模式。
-
-设备码链接请在无痕窗口打开并登录目标账号，普通窗口可以继续保持主账号。对应 ChatGPT 安全设置或工作区权限可能需要先启用设备码登录。登录后显示邮箱并询问 `Save this login as 'work'? [y/N]`；取消、读不到邮箱或输入结束时，不会新增或覆盖账号，临时文件会清理。`--force` 允许覆盖同名账号，但不跳过邮箱确认。API key 登录沿用标准输入，不做邮箱确认。
-
-| 变量 | 默认值 | 用途 |
+| 环境变量 | 默认值 | 用途 |
 | --- | --- | --- |
-| `CA_CODEX_DIR` | `~/.config/codex-accts` | 保存账号副本和 CLI 恢复备份 |
-| `CX_HOME` | `CA_CODEX_DIR` 旁边的 `codex-cli` 目录 | 独立 CLI 的配置、凭据、会话、数据库和日志 |
-| `CX_APP_HOME` | 继承的 CODEX_HOME；没有则 ~/.codex | 初始化时只读的 App 来源目录 |
+| `CS_DIR` | `~/.config/codex-switch` | 网关账号及交接状态 |
+| `CODEX_CLI_PATH` | 安装器记录的原启动器 | 下游 Codex 可执行文件 |
+| `CA_CODEX_DIR` | `~/.config/codex-accts` | 隔离账号存储 |
+| `CX_HOME` | 同级 `codex-cli` 目录 | 隔离 CLI 状态 |
+| `CX_APP_HOME` | 继承的 `CODEX_HOME` 或 `~/.codex` | 初始化时只读的导入源 |
+| `CX_BIN_DIR` | `~/.local/bin`；Windows 本地应用目录 | `cx` 安装位置 |
 
-这三个目录必须分开、互不嵌套；保存凭据的目录必须位于 Git 仓库外。只在 CLI 子进程内设置独立的 CODEX_HOME、CODEX_SQLITE_HOME，并通过命令参数指定文件凭据存储、独立数据库和日志目录，保留复制来的 config.toml 内容。组织强制策略仍然适用。依据：[官方状态目录与环境变量说明](https://learn.chatgpt.com/docs/config-file/environment-variables)。
+隔离账号目录、CLI home 和导入源必须分开且互不嵌套。凭据应保存在 Git、共享文件系统和云同步目录之外。
 
-已有保存账号可以继续使用。旧版共用登录的 `switch-state.json` 备份会保留，不会被新版本自动恢复到 App。如果之前已用旧版本把 App 切成副账号，需要在 App 中确认或重新登录主账号；隔离版本保留 App 当前状态。Windows 使用仅当前用户的 ACL，Unix 使用目录 700、文件 600 权限；凭据副本是明文秘密，不要分享、提交或放到同步目录。
+## 验证
 
-不支持自动轮换、Codex 额度查询、通过 `ca push` 传输 Codex 账号或多个 cx 账号同时运行。启动账号前请清除可能覆盖登录的 API/access-token 环境变量。自定义 provider 和外部插件可能需要单独配置或授权。
-
-以下为原有 Claude 功能说明。
-
-```console
-$ ca usage
-✳ work
-  5 小时  █░░░░░░░░░   2%   Sep 20 05:20 重置
-  本周    ██████████  97%   Sep 23 07:00 重置
-✳ research
-  5 小时  ██░░░░░░░░  18%   Sep 20 06:10 重置
-  本周    █░░░░░░░░░   2%   Sep 23 21:00 重置
-
-$ ca research --continue      # work 的周限额用完了？换个账号，接着刚才的会话
-```
-
-会话历史存在本机 `~/.claude/`，不属于账号，所以换账号后 `--continue`、`--resume` 照样接得上。
-
-- **只用官方凭据**：token 由 `claude setup-token` 生成。不经代理、不经网关，你和 Anthropic 之间没有第三方。
-- **只对一条命令生效**：`ca <名>` 只为这次调用注入 token；直接运行 `claude` 仍是 `/login` 登录的账号。
-- **token 不乱跑**：存在 `~/.config/claude-accts`，权限 600，不在仓库里；`CA_DIR` 指到 git 仓库里会被直接拒绝。
-
-> [!IMPORTANT]
-> 只适合切换**你本人名下**的账号，而且是手动切换。共享账号、或做成自动轮换的号池，违反 Anthropic 的使用条款。
-
-## 快速开始
+Linux 使用 Python 3.11+：
 
 ```bash
-# 1. 安装（每台机器）
-git clone https://github.com/Hliudi/Claude-Account-Management.git ~/.claude-accts
-~/.claude-accts/ca install            # Windows：双击 install.cmd
-
-# 2. 每个账号生成一个 token，在任意一台有浏览器的机器上做
-claude setup-token                    # 用账号 A 登录，复制 token
-claude setup-token                    # 换账号 B 再来一次
-
-# 3. 存起来（输入不回显）并验证
-ca add work
-ca add research
-ca test
+python3 -m unittest discover -s tests -v
 ```
 
-`ca install` 会把 `ca` 加进 `PATH`、建好 token 目录，在交互终端里还会直接带你走完第 3 步。token 有效期约一年。
+macOS/Windows 使用 `python -m unittest discover -s tests -p test_codex_accounts.py -v`。CI 在三个系统验证隔离账号功能，在 Linux 验证共享会话功能。
 
-已经在别的机器配好了？直接通过 ssh 复制过去：`ca push user@host-a host-b`。
-
-## 命令
-
-| 命令 | 作用 |
-| --- | --- |
-| `ca <名> [参数…]` | 用该账号启动 Claude Code，参数原样传给 `claude` |
-| `ca <名> --continue` | 同上，但会先显示将要接续的是哪个会话（`-c` 同样有效） |
-| `ca install` | 安装命令，并交互式添加账号 |
-| `ca setup-token` | 生成 token；只装了 VS Code 扩展的机器也能用 |
-| `ca add <名>` | 保存一个 token（隐藏输入，也可从管道读） |
-| `ca ls` | 列出账号、打码的 token、选定的账号 |
-| `ca who` | 当前会话在花谁的额度，会话内部也能查 |
-| `ca usage [名…]` | 每个账号的 5 小时和每周额度 |
-| `ca test [名…]` | 每个账号真实调用一次，验证 token |
-| `ca rm <名>` | 删掉一个账号 |
-| `ca use [名\|--off]` | 选定 VS Code 扩展用哪个账号 |
-| `ca vscode [--apply]` | 配置 VS Code 用的 wrapper |
-| `ca push <主机>…` | 通过 ssh 把脚本和 token 部署到其他机器 |
-| `ca update` | `git pull` 这份 clone，从它安装的机器跟着更新 |
-
-账号名自己定：字母、数字、`_`、`-`，不与子命令重名即可。名字后面就是 Claude Code 自己的命令行，短选项照用：`ca work -c`、`ca work -r`、`ca work --model opus`。
-
-## 支持的系统
-
-| 系统 | 用哪个 | 安装 |
-| --- | --- | --- |
-| Linux、WSL、服务器 | `ca`（bash） | `./ca install` |
-| macOS | `ca`（bash 3.2 起） | `./ca install` |
-| Windows | `ca-win.ps1`（PowerShell 5.1 / 7） | 双击 `install.cmd` |
-| Windows + Git Bash | `ca`（bash） | `./ca install` |
-
-两个版本共用同一个 token 目录，一台 Windows 上随便用哪个都行。
-
-**只装了 VS Code 扩展、没装命令行？** 照样能用。扩展自带一个 `claude` 二进制，`PATH` 里找不到命令行时 `ca` 会自动回退到它，所以 `ca setup-token`、`ca test`、`ca <名>` 都能跑。而扩展内部的账号切换本来就不需要命令行。
-
-## VS Code 扩展
-
-扩展自己启动 Claude，所以它跟的是「**选定**的账号」，而不是你在终端里设的环境变量。
-
-**Linux · macOS · Remote-SSH** —— 配置一次，之后随便切：
-
-```bash
-ca vscode --apply     # 生成 wrapper，并把 claudeCode.claudeProcessWrapper 指向它
-                      # 然后执行一次 "Developer: Reload Window"
-ca use research       # 新开和恢复的会话用 research；正在跑的会话不变
-ca use --off          # 改回 /login 的账号
-```
-
-Remote-SSH 要在远程那台机器上运行，它写的是 `~/.vscode-server/data/Machine/settings.json`。设置文件里有注释时不会被改动，只打印出要粘贴的那一行。
-
-**Windows** —— 扩展不能用 `.cmd` 当 wrapper，所以 `ca use <名>` 改为设置用户级环境变量 `CLAUDE_CODE_OAUTH_TOKEN`。完全退出 VS Code 再打开即可，新开的终端也会用这个账号。
-
-## 故障排查
-
-| 现象 | 原因和处理 |
-| --- | --- |
-| 刚装完就 `ca: command not found` | PATH 写进了 shell 配置文件，新开一个终端，或 `source ~/.zshrc` |
-| `ca test` 报 `401 OAuth access token is invalid` | token 过期或粘错了：重新 `claude setup-token`，再 `ca add <名>` |
-| VS Code 还在用旧账号 | Linux/macOS 需要新开会话；Windows 需要完全退出重开。`ca ls` 里 `*` 标的就是选定的账号 |
-| `ca vscode --apply` 跳过了我的设置文件 | 那个文件有注释，把打印出来的那一行自己粘进 `Preferences: Open User Settings (JSON)` |
-| 提示拒绝在这里存 token | `CA_DIR` 指到了 git 仓库里，用默认值或换个位置 |
-| 切换后第一轮又慢又费额度 | prompt cache 按账号隔离，上下文要重读一次。挑任务之间切，别在一件事做到一半时切 |
-
-## 参考
-
-| 变量 | 默认值 | 用途 |
-| --- | --- | --- |
-| `CA_DIR` | `~/.config/claude-accts` | token 和选定账号存在哪 |
-| `CA_BIN_DIR` | `~/.local/bin`（Windows：`%LOCALAPPDATA%\claude-accts\bin`） | 命令装到哪 |
-| `CA_LANG` | 跟随系统 | 设成 `zh` 或 `en` 强制输出语言 |
-| `CA_YES` | 未设置 | 设成任意值即跳过 `--continue` 的确认 |
-| `NO_COLOR` | 未设置 | 设成任意值即关闭彩色输出 |
-
-还需要知道的：
-
-- **现在用的是哪个账号？** `ca who`。在命令行的 Claude Code 会话里直接输入 `!ca who`，`!` 开头的命令会在当前会话里执行，不用另开终端。它以 token 为准；如果环境里只剩下 `CA_ACCOUNT`，会显示成「启动时用的是 …」，因为继承来的变量可能比设置它的那个会话活得更久。终端标签页也会改名。
-- **`--continue` 会先问一下。** 它会打印会话标题、最后活动时间和最后一条消息，等你回车再继续。`CA_YES=1` 可跳过。
-- **切换后 `/usage` 看不到额度条。** `setup-token` 的凭据缺 `user:profile` 权限，那个界面读不到数据，只能退回本地花费统计。改用 `ca usage`：它从 API 响应头里的限额字段读，任何凭据都有效，代价是每个账号一次 Haiku 调用（一个 token）。
-- `--continue` 只能接**本机**的会话，历史不跨机器。
-- `setup-token` 的凭据可能不带 claude.ai 连接器权限，缺功能就在那台机器上 `/login`。
-
-## 许可证
-
-MIT
+设置 `CS_TEST_CODEX_BIN=/path/to/codex` 可运行真实 CLI/HUD 测试。测试使用临时 home、合成凭据和本地模拟 Responses 服务，覆盖双向接续、工具执行和结果回传、daemon 交接及异常恢复。它们不使用现有账号或付费模型，也不能代替真实 Poe/网关账号与模型的联调。
