@@ -176,6 +176,23 @@ def build_command(account, args):
         validate_account(account)
     except (ValueError, TypeError):
         die("Invalid account settings; check the URL, API key and provider type (contents hidden).")
+    position = 0
+    while position < len(args):
+        token = args[position]
+        if token == "--":
+            break
+        value = ""
+        if token in ("-c", "--config") and position + 1 < len(args):
+            position += 1
+            value = args[position]
+        elif token.startswith("--config="):
+            value = token.partition("=")[2]
+        elif token.startswith("-c") and token != "-c":
+            value = token[2:]
+        key = value.partition("=")[0].strip()
+        if key in ("model_provider", "openai_base_url") or key.startswith("model_providers."):
+            die("Choose the provider through cs accounts; routing overrides would conflict with the displayed account.")
+        position += 1
     env = os.environ.copy()
     env["CODEX_HOME"] = str(CSDir.APP.expanduser().resolve())
     if account["type"] != "proxy":
@@ -226,8 +243,16 @@ def launch(account, args, thread_id=None, exec_mode=False):
     binary = find_codex()
     full_args, env = build_command(account, args)
     env["CS_ACCOUNT"] = account["name"]
+    env["CS_ACCOUNT_TYPE"] = account["type"]
+    env["CS_MODEL_PROVIDER"] = provider_id(account["name"]) if account["type"] == "proxy" else "openai"
+    env["CS_SESSION_LABEL"] = "CS PROXY / " + account["name"] if account["type"] == "proxy" else "CODEX OFFICIAL"
+    if account["type"] == "proxy":
+        env["CS_GATEWAY_URL"] = account["base_url"]
+    else:
+        env.pop("CS_GATEWAY_URL", None)
     if has_help(args):
         return subprocess.call([binary, *full_args], env=env)
+    print("[" + env["CS_SESSION_LABEL"] + "] " + account_description(account), file=sys.stderr, flush=True)
     ensure_root()
     if exec_mode:
         directory = ownership_dir(CSDir.ROOT, CSDir.APP)
@@ -238,7 +263,10 @@ def launch(account, args, thread_id=None, exec_mode=False):
         die("Managed sessions use a local writer; --remote is not supported.")
     if "--no-daemon" not in full_args:
         full_args = ["--no-daemon", *full_args]
-    return run_interactive(binary, full_args, env, CSDir.APP, CSDir.ROOT, thread_id)
+    result = run_interactive(binary, full_args, env, CSDir.APP, CSDir.ROOT, thread_id)
+    if account["type"] == "proxy" and thread_id:
+        print(f"Official continuation: codex resume {thread_id}", file=sys.stderr)
+    return result
 
 
 def cmd_add(name, force=False, preset=None):
@@ -304,10 +332,28 @@ def cmd_ls():
 def cmd_who():
     conf = read_conf()
     cur = conf.get("current")
+    active = os.environ.get("CS_ACCOUNT")
+    if active:
+        active_type = os.environ.get("CS_ACCOUNT_TYPE")
+        active_account = conf.get("accounts", {}).get(active)
+        if active_type == "native" or (not active_type and active == "native"):
+            active_account = {"name": active, "type": "native"}
+        elif active_type == "proxy" and os.environ.get("CS_GATEWAY_URL"):
+            active_account = {"name": active, "type": "proxy", "base_url": os.environ["CS_GATEWAY_URL"]}
+        if active_account is not None:
+            print("This process was launched as: " + account_description(active_account))
     if cur and cur in conf.get("accounts", {}):
-        print(f"cs account: {cur}")
+        print("Next cs launch: " + account_description(conf["accounts"][cur]))
     else:
-        print("cs account: unset (plain codex uses the default login)")
+        print("Next cs launch: no account selected.")
+    print("codex: official OpenAI; cs native resume: managed official handoff.")
+
+
+def account_description(account):
+    if account["type"] == "native":
+        return "Official OpenAI login (provider=openai)"
+    host = urlsplit(account["base_url"]).hostname
+    return f"Proxy account={account['name']} gateway={host} (provider={provider_id(account['name'])})"
 
 
 def cmd_use(name):
@@ -495,7 +541,7 @@ def read_picker_key(fd):
     return text or decoder.decode(b"", final=True)
 
 
-def pick_session(show_all=False, cwd=None):
+def pick_session(show_all=False, cwd=None, account=None):
     """Interactive full-screen session picker across ALL providers.
 
     Keys: Up/Down or k/j = move, PgUp/PgDn = page, Enter = select, q/Esc = cancel,
@@ -530,7 +576,7 @@ def pick_session(show_all=False, cwd=None):
         nonlocal scroll
         cols = shutil.get_terminal_size((90, 24)).columns
         lines = shutil.get_terminal_size((90, 24)).lines
-        view_h = max(5, lines - 5)
+        view_h = max(5, lines - 6)
         items = visible()
         nonlocal_selected = min(selected, max(0, len(items) - 1))
         if nonlocal_selected < scroll:
@@ -544,6 +590,8 @@ def pick_session(show_all=False, cwd=None):
         if query:
             header += f"   filter: {query}"
         buf.append(f"\x1b[1;36m{header}\x1b[0m\r\n")
+        if account:
+            buf.append(account_description(account) + "\r\n")
         buf.append("\x1b[2m up/down = move   type = filter   Enter = resume   Esc/Ctrl+C = cancel\x1b[0m\r\n")
         buf.append("-" * min(cols, 100) + "\r\n")
         for i in range(scroll, min(scroll + view_h, len(items))):
@@ -572,7 +620,7 @@ def pick_session(show_all=False, cwd=None):
             render()
             key = read_picker_key(fd)
             items = visible()
-            view_h = max(5, shutil.get_terminal_size((90, 24)).lines - 5)
+            view_h = max(5, shutil.get_terminal_size((90, 24)).lines - 6)
             if key == "up":
                 selected = max(0, selected - 1)
             elif key == "down":
@@ -690,7 +738,7 @@ def cmd_resume(args, account=None):
     elif not positional:
         if options["--exec"]:
             die("Non-interactive resume requires a session ID or --last.")
-        chosen = pick_session(show_all=options["--include-non-interactive"], cwd=cwd)
+        chosen = pick_session(show_all=options["--include-non-interactive"], cwd=cwd, account=account)
         if not chosen:
             print("cs: no session selected.")
             return 0
@@ -739,6 +787,11 @@ def account_cli(account, args):
 
 
 def native_cli(args):
+    prefix, rest = split_prefix(args)
+    if rest and rest[0] == "resume" and not has_help(args):
+        resume_flags, positional = split_prefix(rest[1:])
+        if not positional and "--last" not in resume_flags:
+            return launch({"name": "native", "type": "native"}, args)
     return account_cli({"name": "native", "type": "native"}, args)
 
 
@@ -834,7 +887,7 @@ Credentials live in ~/.config/codex-switch (mode 600), never inside a git repo.
     if cmd == "install":
         cmd_install()
     elif cmd == "native":
-        return native_cli(rest)
+        return account_cli({"name": "native", "type": "native"}, rest)
     elif cmd in ("ls", "list"):
         cmd_ls()
     elif cmd in ("who", "whoami"):

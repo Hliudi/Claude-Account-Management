@@ -23,7 +23,7 @@ cs resume
 
 添加网关时选择 proxy，输入 API 根地址、API key（隐藏输入）和模型名。网关必须支持 Responses API。账号保存在仓库外的 `~/.config/codex-switch`，采用仅本人可读写的权限。
 
-安装器在 `~/.local/bin` 中建立 `cs` 和 `codex` 交接入口，并保留原来的 Codex/HUD 启动器。已有 Git 工作区安装会直接使用更新后的代码，无需重新安装。
+安装器在 `~/.local/bin` 中建立 `cs` 和仅使用官方 provider 的 `codex` 入口，并保留原来的 Codex/HUD 启动器。`codex resume` 使用原生官方选择器，`cs resume` 使用本工具的跨 provider 选择器。已有 Git 工作区安装会直接使用更新后的代码，无需重新安装。
 
 ## 轮流接着开发
 
@@ -31,10 +31,12 @@ cs resume
 codex resume                     # 官方账号继续聊天
 cs resume                        # 选择同一会话，请求旧端释放并接管
 # 在 cs 中输入 /exit，释放写入权
-codex resume                     # 选择同一会话，继续读取新增的历史
+codex resume <同一会话的ID>        # 使用官方账号，继续读取代理端新增的历史
 ```
 
-两边都可以使用完整 session ID 或 `cs sessions` 列出的编号。`resume --last` 跨 provider 查找当前目录最新会话；加 `--all` 可以搜索其他目录。`cs native resume` 也是官方入口。编号绑定到当前 home 和数据库，切换存储目录后重新运行 `cs sessions`。
+两边都可以使用完整 session ID 或 `cs sessions` 列出的编号。`resume --last` 跨 provider 查找当前目录最新会话；加 `--all` 可以搜索其他目录。原生选择器可能过滤掉最后由代理保存的会话，切回官方时使用相同 ID，或用 `cs native resume` 打开明确标注为官方的跨 provider 选择器。编号绑定到当前 home 和数据库，切换存储目录后重新运行 `cs sessions`。
+
+启动提示与终端标题会标明 `CODEX OFFICIAL`（官方）或 `CS PROXY / <账号>`（代理），启动提示和工具选择器还会显示实际网关域名。网关配置中的协议名称可能因兼容需要保留 OpenAI；判断凭据来源时看明确的启动身份标识。`cs who` 分别显示当前进程继承的启动身份、下一次 `cs` 启动的选择；`cs use` 不会把普通 `codex` 切换到代理账号。
 
 受管理终端使用独立的本地写入进程。接管时先请求旧终端正常退出，确认锁释放后再启动新写入者。session ID 和已保存历史保持连续，`/exit` 释放写入权。
 

@@ -23,7 +23,7 @@ cs resume
 
 Choose a proxy when adding a gateway, enter its API root and hidden API key, and specify its model if different from your default. The gateway must implement the Responses API. Credentials live outside the repository in `~/.config/codex-switch`, with private permissions.
 
-The installer links `cs` and a coordinated `codex` wrapper into `~/.local/bin`. It retains the original Codex/HUD launcher as the downstream executable and adds the bin directory to Bash startup files. Existing Git-checkout installations use code updates immediately.
+The installer links `cs` and an official-only `codex` wrapper into `~/.local/bin`. It retains the original Codex/HUD launcher as the downstream executable and adds the bin directory to Bash startup files. Existing Git-checkout installations use code updates immediately. Plain `codex resume` opens Codex's original official-provider picker; `cs resume` opens the cross-provider picker using the selected account.
 
 ### Continue the same conversation
 
@@ -31,10 +31,12 @@ The installer links `cs` and a coordinated `codex` wrapper into `~/.local/bin`. 
 codex resume                     # official login
 cs resume                        # choose the same session; request ownership
 # Enter /exit in cs to release its writer.
-codex resume                     # continue with the newly saved history
+codex resume <same-session-id>   # official login, including newly saved proxy history
 ```
 
-Both commands accept a full session ID or a number from `cs sessions`. `resume --last` searches the current directory across providers; `--all` searches every directory. `cs native resume` is another official-login entry point. Session numbers are scoped to their home and database; refresh the list after changing state directories.
+Both commands accept a full session ID or a number from `cs sessions`. `resume --last` searches the current directory across providers; `--all` searches every directory. The original picker may filter out conversations last saved by a proxy: use the exact session ID when returning to official login, or run `cs native resume` for an explicitly official cross-provider picker. Session numbers are scoped to their home and database; refresh the list after changing state directories.
+
+Launch banners and terminal titles show `CODEX OFFICIAL` or `CS PROXY / <account>`, with the gateway host printed at startup and in the managed picker. A gateway's configured protocol name can remain OpenAI for compatibility; use the explicit launch identity to identify the credential source. `cs who` distinguishes the current process's inherited launch identity from the account selected for the next `cs` invocation; selecting a proxy does not switch plain `codex` to that account.
 
 Managed terminals run without the shared daemon. Taking over an active managed session requests the original terminal to exit before starting the next writer. `/exit` releases ownership. The session ID and saved history remain the same.
 

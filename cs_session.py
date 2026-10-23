@@ -24,6 +24,52 @@ class HandoffError(RuntimeError):
     pass
 
 
+class TerminalLabel:
+    def __init__(self, label):
+        self.label = label.encode()
+        self.pending = b""
+
+    def feed(self, data):
+        if not self.label:
+            return data
+        self.pending += data
+        output = bytearray()
+        while self.pending:
+            start = self.pending.find(b"\x1b]")
+            if start < 0:
+                keep = 1 if self.pending.endswith(b"\x1b") else 0
+                output.extend(self.pending[:-keep] if keep else self.pending)
+                self.pending = self.pending[-keep:] if keep else b""
+                break
+            output.extend(self.pending[:start])
+            self.pending = self.pending[start:]
+            if len(self.pending) < 4:
+                break
+            if self.pending[:4] not in (b"\x1b]0;", b"\x1b]2;"):
+                output.extend(self.pending[:2])
+                self.pending = self.pending[2:]
+                continue
+            endings = [(position, terminator) for terminator in (b"\x07", b"\x1b\\")
+                       if (position := self.pending.find(terminator, 4)) >= 0]
+            if not endings:
+                if len(self.pending) > 8192:
+                    output.extend(self.pending)
+                    self.pending = b""
+                break
+            end, terminator = min(endings)
+            title = self.pending[4:end]
+            output.extend(self.pending[:4])
+            if title:
+                output.extend(b"[" + self.label + b"] " + title)
+            output.extend(terminator)
+            self.pending = self.pending[end + len(terminator):]
+        return bytes(output)
+
+    def flush(self):
+        pending, self.pending = self.pending, b""
+        return pending
+
+
 def receive_json(connection):
     data = bytearray()
     while b"\n" not in data:
@@ -208,6 +254,7 @@ def _terminal(binary, args, env, home, directory, thread_id, gate):
     last_interrupt = 0
     stop_requested = False
     record = endpoint.with_suffix(".json")
+    title_label = TerminalLabel(env.get("CS_SESSION_LABEL", ""))
 
     def resize(signum=None, frame=None):
         if master is not None:
@@ -231,6 +278,8 @@ def _terminal(binary, args, env, home, directory, thread_id, gate):
                 os._exit(127)
         atomic_json(record, {"child_pid": child_pid})
         resize()
+        if title_label.label:
+            write_all(sys.stdout.fileno(), b"\x1b]0;[" + title_label.label + b"]\x07")
         tty.setraw(terminal_fd)
         for signum, handler in [(signal.SIGWINCH, resize), (signal.SIGTERM, stop),
                                 (signal.SIGHUP, stop), (signal.SIGINT, stop)]:
@@ -293,7 +342,7 @@ def _terminal(binary, args, env, home, directory, thread_id, gate):
                             raise
                         data = b""
                     if data:
-                        write_all(sys.stdout.fileno(), data)
+                        write_all(sys.stdout.fileno(), title_label.feed(data))
                     else:
                         if exit_status is None:
                             exit_status = stop_child(child_pid, initial_signal=None)
@@ -302,6 +351,8 @@ def _terminal(binary, args, env, home, directory, thread_id, gate):
             if drain_deadline == 0:
                 break
     finally:
+        with contextlib.suppress(OSError):
+            write_all(sys.stdout.fileno(), title_label.flush())
         with contextlib.suppress(termios.error):
             termios.tcsetattr(terminal_fd, termios.TCSADRAIN, original)
         for signum, handler in old_signals.items():

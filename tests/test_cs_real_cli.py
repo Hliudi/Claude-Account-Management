@@ -171,11 +171,16 @@ class RealCliTests(unittest.TestCase):
 
             first = None
             if not shared_daemon:
-                first = launch("--native-cli", "resume", thread_id)
+                first = launch("--native-cli", "resume", "--include-non-interactive")
                 first.expect(b"SEED_NATIVE", timeout=30)
+                self.assertNotIn(b"Select a session to resume", first.output)
+                self.assertIn(b"CODEX OFFICIAL", first.output)
+                first.send(b"\r")
+                first.expect(b"LOCAL_REPLY_SEED_NATIVE", timeout=30)
                 wait_writer(first)
             second = launch("resume", thread_id)
             second.expect(b"SEED_NATIVE", timeout=30)
+            self.assertIn(b"CS PROXY / proxy", second.output)
             if first:
                 self.assertEqual(first.process.wait(10), 0)
             else:
@@ -190,6 +195,7 @@ class RealCliTests(unittest.TestCase):
             self.assertFalse(writer_busy(home, thread_id))
             third = launch("--native-cli", "resume", thread_id)
             third.expect(b"PROXY_CONTINUATION", timeout=30)
+            self.assertIn(b"CODEX OFFICIAL", third.output)
             submit(third, "OFFICIAL_RETURN")
             third.expect(b"LOCAL_REPLY_OFFICIAL_RETURN", timeout=30)
             submit(third, "/exit")
