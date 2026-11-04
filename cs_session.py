@@ -223,12 +223,14 @@ def request_handoff(directory, home, thread_id, timeout=20, binary=None):
         )
 
 
-def run_interactive(binary, args, env, home, root, thread_id=None):
+def run_interactive(binary, args, env, home, root, thread_id=None, prepare=None):
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         raise HandoffError("Interactive sessions need a terminal; use --exec for non-interactive work.")
     directory = ownership_dir(root, home)
     with startup_gate(directory, thread_id) as gate:
         request_handoff(directory, home, thread_id, binary=binary)
+        if prepare is not None:
+            prepare(directory)
         return _terminal(binary, args, env, home, directory, thread_id, gate)
 
 

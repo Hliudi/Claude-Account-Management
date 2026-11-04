@@ -98,6 +98,25 @@ class CommandTests(unittest.TestCase):
             self.assertEqual(launch.call_args.args[0]["type"], "native")
             self.assertEqual(launch.call_args.kwargs["thread_id"], THREAD)
 
+    def test_native_bare_resume_uses_cross_provider_picker_with_official_login(self):
+        for args in (["resume"], ["resume", "--all"],
+                     ["--model", "chosen", "resume", "--include-non-interactive"]):
+            with self.subTest(args=args), patch.object(cs, "pick_session", return_value=THREAD) as picker, \
+                    patch.object(cs, "launch", return_value=0) as launch:
+                self.assertEqual(cs.native_cli(args), 0)
+                self.assertEqual(picker.call_args.kwargs["account"], {"name": "native", "type": "native"})
+                self.assertEqual(picker.call_args.kwargs["show_all"], "--include-non-interactive" in args)
+                self.assertEqual(launch.call_args.args[0], {"name": "native", "type": "native"})
+                self.assertEqual(launch.call_args.kwargs["thread_id"], THREAD)
+                self.assertEqual(launch.call_args.args[1],
+                                 (["--model", "chosen"] if "--model" in args else []) + ["resume", THREAD])
+
+    def test_native_picker_cancel_does_not_launch_or_take_ownership(self):
+        with patch.object(cs, "pick_session", return_value=None), patch.object(cs, "launch") as launch, \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(cs.native_cli(["resume"]), 0)
+            launch.assert_not_called()
+
     def test_official_return_explicitly_overrides_persisted_proxy(self):
         with patch.dict(os.environ, {"CS_PROXY_API_KEY": "synthetic", "OPENAI_BASE_URL": "https://invalid"}):
             command, env = cs.build_command({"name": "native", "type": "native"}, ["resume", THREAD])

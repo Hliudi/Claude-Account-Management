@@ -28,6 +28,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tomllib
 from urllib.parse import urlsplit
 
 from cs_session import HandoffError, ownership_dir, request_handoff, run_interactive, startup_gate
@@ -239,7 +240,7 @@ def build_command(account, args):
     return overrides + list(args), env
 
 
-def launch(account, args, thread_id=None, exec_mode=False):
+def launch(account, args, thread_id=None, exec_mode=False, repair_history=False):
     binary = find_codex()
     full_args, env = build_command(account, args)
     env["CS_ACCOUNT"] = account["name"]
@@ -254,19 +255,59 @@ def launch(account, args, thread_id=None, exec_mode=False):
         return subprocess.call([binary, *full_args], env=env)
     print("[" + env["CS_SESSION_LABEL"] + "] " + account_description(account), file=sys.stderr, flush=True)
     ensure_root()
+    def prepare(directory):
+        from cs_switch import prepare_resume
+        prepare_resume(binary, CSDir.APP, directory, thread_id, env["CS_MODEL_PROVIDER"],
+                       resume_model(account, args), repair_history=repair_history)
+
     if exec_mode:
         directory = ownership_dir(CSDir.ROOT, CSDir.APP)
         with startup_gate(directory, thread_id):
             request_handoff(directory, CSDir.APP, thread_id, binary=binary)
+            prepare(directory)
             return subprocess.call([binary, *full_args], env=env)
     if any(arg == "--remote" or arg.startswith("--remote=") for arg in args):
         die("Managed sessions use a local writer; --remote is not supported.")
     if "--no-daemon" not in full_args:
         full_args = ["--no-daemon", *full_args]
-    result = run_interactive(binary, full_args, env, CSDir.APP, CSDir.ROOT, thread_id)
+    result = run_interactive(binary, full_args, env, CSDir.APP, CSDir.ROOT, thread_id,
+                             prepare=prepare)
     if account["type"] == "proxy" and thread_id:
         print(f"Official continuation: codex resume {thread_id}", file=sys.stderr)
     return result
+
+
+def resume_model(account, args):
+    """Model inherited by restored children, including the caller's CLI override."""
+    config_path = CSDir.APP / "config.toml"
+    try:
+        config = tomllib.loads(config_path.read_text()) if config_path.exists() else {}
+    except (ValueError, UnicodeError):
+        die("Cannot parse Codex config.toml (contents hidden).")
+    profile = None
+    for index, token in enumerate(args):
+        if token == "--":
+            break
+        if token in ("-p", "--profile") and index + 1 < len(args):
+            profile = args[index + 1]
+        elif token.startswith("--profile="):
+            profile = token.partition("=")[2]
+    defaults = config.get("profiles", {}).get(profile, {})
+    model = account.get("model") or defaults.get("model") or config.get("model")
+    for index, token in enumerate(args):
+        if token == "--":
+            break
+        if token in ("-m", "--model") and index + 1 < len(args):
+            model = args[index + 1]
+        elif token.startswith("--model="):
+            model = token.partition("=")[2]
+        else:
+            value = (args[index + 1] if token in ("-c", "--config") and index + 1 < len(args)
+                     else token.partition("=")[2] if token.startswith("--config=")
+                     else token[2:] if token.startswith("-c") else "")
+            if value.partition("=")[0].strip() == "model":
+                model = tomllib.loads(value)["model"]
+    return model
 
 
 def cmd_add(name, force=False, preset=None):
@@ -696,7 +737,7 @@ def cmd_resume(args, account=None):
     if has_help(args):
         return launch(account, ["resume", *args])
     flags, positional = [], []
-    options = {"--last": False, "--all": False, "--exec": False,
+    options = {"--last": False, "--all": False, "--exec": False, "--repair-history": False,
                "--include-non-interactive": False}
     rest = list(args)
     literal = False
@@ -759,7 +800,8 @@ def cmd_resume(args, account=None):
     if len(positional) > 1 and (literal or positional[1].startswith("-")):
         positional.insert(1, "--")
     command = ["exec", *flags, "resume", *positional] if options["--exec"] else [*flags, "resume", *positional]
-    return launch(account, command, thread_id=thread_id, exec_mode=options["--exec"])
+    extra = {"repair_history": True} if options["--repair-history"] else {}
+    return launch(account, command, thread_id=thread_id, exec_mode=options["--exec"], **extra)
 
 
 def account_cli(account, args):
@@ -787,11 +829,8 @@ def account_cli(account, args):
 
 
 def native_cli(args):
-    prefix, rest = split_prefix(args)
-    if rest and rest[0] == "resume" and not has_help(args):
-        resume_flags, positional = split_prefix(rest[1:])
-        if not positional and "--last" not in resume_flags:
-            return launch({"name": "native", "type": "native"}, args)
+    # Use the shared picker for bare resume too: Codex's provider-scoped picker
+    # hides conversations after a proxy becomes their last saved provider.
     return account_cli({"name": "native", "type": "native"}, args)
 
 
@@ -854,6 +893,7 @@ Usage:
   cs rm <name>                  remove an account
   cs sessions [N] [--all]       list codex sessions (shows resume commands)
   cs resume                     open a picker with ALL sessions (any provider)
+  cs resume --repair-history ID back up and clear encrypted reasoning for a session tree
   cs resume --last              continue the most recent session directly
   cs resume <id> [prompt...]    resume a specific session
   cs continue                   shortcut for `cs resume --last`

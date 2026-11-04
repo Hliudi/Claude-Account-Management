@@ -16,8 +16,8 @@ THREAD = "12345678-1234-4234-8234-123456789abc"
 
 
 class IdentityTests(unittest.TestCase):
-    def test_plain_codex_resume_delegates_to_original_picker(self):
-        for args in (["resume"], ["resume", "--all"], ["-m", "chosen", "resume"]):
+    def test_resume_help_delegates_without_opening_picker(self):
+        for args in (["resume", "--help"], ["resume", "-h"], ["-m", "chosen", "resume", "--help"]):
             with patch.object(cs, "launch", return_value=0) as launch, \
                  patch.object(cs, "pick_session", side_effect=AssertionError("custom picker must not open")):
                 cs.native_cli(args)

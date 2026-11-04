@@ -23,7 +23,7 @@ cs resume
 
 Choose a proxy when adding a gateway, enter its API root and hidden API key, and specify its model if different from your default. The gateway must implement the Responses API. Credentials live outside the repository in `~/.config/codex-switch`, with private permissions.
 
-The installer links `cs` and an official-only `codex` wrapper into `~/.local/bin`. It retains the original Codex/HUD launcher as the downstream executable and adds the bin directory to Bash startup files. Existing Git-checkout installations use code updates immediately. Plain `codex resume` opens Codex's original official-provider picker; `cs resume` opens the cross-provider picker using the selected account.
+The installer links `cs` and an official-only `codex` wrapper into `~/.local/bin`. It retains the original Codex/HUD launcher as the downstream executable and adds the bin directory to Bash startup files. Existing Git-checkout installations use code updates immediately. Both `codex resume` and `cs resume` open the cross-provider picker: `codex` always continues with official login, while `cs` uses the selected account.
 
 ### Continue the same conversation
 
@@ -34,11 +34,24 @@ cs resume                        # choose the same session; request ownership
 codex resume <same-session-id>   # official login, including newly saved proxy history
 ```
 
-Both commands accept a full session ID or a number from `cs sessions`. `resume --last` searches the current directory across providers; `--all` searches every directory. The original picker may filter out conversations last saved by a proxy: use the exact session ID when returning to official login, or run `cs native resume` for an explicitly official cross-provider picker. Session numbers are scoped to their home and database; refresh the list after changing state directories.
+Both commands accept a full session ID or a number from `cs sessions`. `resume --last` searches the current directory across providers; `--all` searches every directory. The managed picker includes conversations last saved by a proxy; `codex resume` and `cs native resume` both continue them with official login. The downstream unwrapped Codex picker can still filter by provider. Session numbers are scoped to their home and database; refresh the list after changing state directories.
 
 Launch banners and terminal titles show `CODEX OFFICIAL` or `CS PROXY / <account>`, with the gateway host printed at startup and in the managed picker. A gateway's configured protocol name can remain OpenAI for compatibility; use the explicit launch identity to identify the credential source. `cs who` distinguishes the current process's inherited launch identity from the account selected for the next `cs` invocation; selecting a proxy does not switch plain `codex` to that account.
 
 Managed terminals run without the shared daemon. Taking over an active managed session requests the original terminal to exit before starting the next writer. `/exit` releases ownership. The session ID and saved history remain the same.
+
+Resuming through `cs` or the installed `codex` wrapper switches the saved provider for the whole conversation tree, including existing children and grandchildren. Restored children use the destination's model when their provider changes. `cs use` only selects the account for a future launch; it does not change running terminals. Child work resumes when Codex restores or addresses that child, rather than being automatically reissued by `cs`.
+
+Before a provider change, `cs` releases and checks every writer in that tree, backs up its rollouts privately under `CS_DIR/ownership`, and clears encrypted **reasoning** replay data. Messages, tool calls/results, session IDs, archive states and pagination offsets are retained. This avoids replaying a gateway's reasoning ciphertext with an incompatible item ID at another provider. The model loses the opaque reasoning state; the original remains in the backup. Interrupted changes keep a recovery journal and are recovered on the next managed resume.
+
+If a previous switch already left an `invalid_encrypted_content` error, exit the failing terminal and use:
+
+```bash
+cs native resume --repair-history <session-id>  # repair and return to official login
+cs Krill resume --repair-history <session-id>   # repair using a saved gateway
+```
+
+Repair covers descendants too and makes no model request itself. Encrypted compaction summaries and encrypted tool/message payloads are preserved because they can be the only record of earlier work. If the destination rejects those as well, return to the original provider to produce a plain-text handoff for a new conversation. Compressed/missing rollouts, unsupported database layouts, a writer that cannot be released, or legacy metadata without room for an offset-preserving provider update stop the launch instead of partially switching accounts. Local mock tests verify routing and replay handling, not every gateway's encrypted payload compatibility.
 
 For a local shared daemon writer, including an older CLI or App chat, handoff temporarily archives and immediately restores the target session and its descendants through the public lifecycle API. Existing windows can briefly receive archive notifications. Recovery journals preserve original archive states; retry the same command if restoration is interrupted. The daemon and unrelated conversations continue running.
 

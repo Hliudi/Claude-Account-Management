@@ -28,7 +28,10 @@ class RealCliTests(unittest.TestCase):
     def test_third_party_tool_loop_and_exec_resume(self):
         self.roundtrip(exercise_tools=True)
 
-    def roundtrip(self, shared_daemon=False, exercise_tools=False):
+    def test_restored_subagent_requests_follow_provider_in_both_directions(self):
+        self.roundtrip(exercise_agents=True)
+
+    def roundtrip(self, shared_daemon=False, exercise_tools=False, exercise_agents=False):
         with tempfile.TemporaryDirectory(prefix="cs-real-") as temporary:
             base = Path(temporary)
             home = base / "home"
@@ -36,6 +39,8 @@ class RealCliTests(unittest.TestCase):
             home.mkdir()
             root.mkdir()
             requests = []
+            root_request_thread = []
+            phase = ["SEED_NATIVE"]
 
             def has_user_message(request, text):
                 return any(item.get("role") == "user" and any(content.get("text") == text
@@ -56,10 +61,28 @@ class RealCliTests(unittest.TestCase):
                     request = json.loads(body)
                     request["test_authorization"] = self.headers.get("Authorization")
                     request["test_path"] = self.path
+                    request["test_thread"] = self.headers.get("thread-id")
+                    if not root_request_thread:
+                        root_request_thread.append(request["test_thread"])
+                    is_child = request["test_thread"] != root_request_thread[0]
+                    request["test_child"] = is_child
+                    request["test_phase"] = phase[0]
                     requests.append(request)
                     number = len(requests)
+                    expected_cipher = "synthetic-cipher-" + request["test_authorization"]
+                    if any(item.get("encrypted_content") not in (None, expected_cipher)
+                           for item in request.get("input", [])):
+                        data = json.dumps({"error": {"code": "invalid_encrypted_content",
+                                                   "message": "Synthetic provider mismatch"}}).encode()
+                        self.send_response(400)
+                        self.send_header("Content-Length", str(len(data)))
+                        self.end_headers()
+                        self.wfile.write(data)
+                        return
                     marker = next((marker for marker in ("EXEC_NATIVE", "EXEC_PROXY", "OFFICIAL_RETURN", "PROXY_CONTINUATION", "SEED_NATIVE")
                                    if has_user_message(request, marker)), "PREWARM")
+                    if is_child:
+                        marker = "CHILD_REPLY"
                     events = [
                         {"type": "response.created", "response": {"id": f"resp-{number}"}},
                         {"type": "response.output_item.done", "item": {"id": f"msg-{number}",
@@ -75,6 +98,21 @@ class RealCliTests(unittest.TestCase):
                             "type": "function_call", "call_id": "call-proxy-tool", "name": "exec_command",
                             "arguments": json.dumps({"cmd": "printf TOOL_LOOP_OK", "shell": "/bin/sh", "login": False,
                                                      "yield_time_ms": 1000, "max_output_tokens": 200})}}
+                    if exercise_agents and not is_child:
+                        call_id = "call-agent-" + marker
+                        if marker in ("SEED_NATIVE", "PROXY_CONTINUATION", "OFFICIAL_RETURN") and not any(
+                                item.get("type") == "function_call_output" and item.get("call_id") == call_id
+                                for item in request.get("input", [])):
+                            spawn = marker == "SEED_NATIVE"
+                            arguments = ({"task_name": "probe", "fork_turns": "none", "message": "Synthetic child probe"}
+                                         if spawn else {"target": "/root/probe", "message": "Synthetic child probe " + marker})
+                            events[1] = {"type": "response.output_item.done", "item": {
+                                "type": "function_call", "call_id": call_id, "namespace": "collaboration",
+                                "name": "spawn_agent" if spawn else "followup_task", "arguments": json.dumps(arguments),
+                                "encrypted_function_args": []}}
+                    events.insert(1, {"type": "response.output_item.done", "item": {
+                        "type": "reasoning", "id": f"rs-{number}", "summary": [],
+                        "encrypted_content": expected_cipher}})
                     data = "".join(f"event: {event['type']}\ndata: {json.dumps(event)}\n\n" for event in events).encode()
                     self.send_response(200)
                     self.send_header("Content-Type", "text/event-stream")
@@ -91,9 +129,13 @@ class RealCliTests(unittest.TestCase):
             config = ('model = "gpt-5.2-codex"\n'
                       f'openai_base_url = "{url}"\n'
                       'approval_policy = "never"\n'
+                      # Only the synthetic local server can request commands;
+                      # avoid depending on bwrap mount privileges in containers.
+                      'sandbox_mode = "danger-full-access"\n'
                       'cli_auth_credentials_store = "file"\n'
                       'web_search = "disabled"\n'
                       '[features]\nresponses_websockets = false\nresponses_websockets_v2 = false\n'
+                      + ('multi_agent = true\nmulti_agent_v2 = true\n' if exercise_agents else '') +
                       '[tui]\nscreen_reader_detection_done = true\n'
                       f'[projects.{json.dumps(str(base))}]\ntrust_level = "trusted"\n')
             (home / "config.toml").write_text(config)
@@ -113,6 +155,13 @@ class RealCliTests(unittest.TestCase):
             self.assertEqual(seed.returncode, 0, seed.stderr[-5000:])
             thread_id = next(json.loads(line)["thread_id"] for line in seed.stdout.splitlines()
                              if json.loads(line).get("type") == "thread.started")
+            probe_thread_id = None
+            if exercise_agents:
+                with sqlite3.connect(next(home.glob("state_*.sqlite"))) as connection:
+                    children = connection.execute("SELECT child_thread_id FROM thread_spawn_edges WHERE parent_thread_id=?",
+                                                  (thread_id,)).fetchall()
+                self.assertEqual(len(children), 1, "Seed must persist exactly one test child")
+                probe_thread_id = children[0][0]
             daemon = None
             client = None
             if shared_daemon:
@@ -171,12 +220,14 @@ class RealCliTests(unittest.TestCase):
 
             first = None
             if not shared_daemon:
-                first = launch("--native-cli", "resume", "--include-non-interactive")
-                first.expect(b"SEED_NATIVE", timeout=30)
-                self.assertNotIn(b"Select a session to resume", first.output)
-                self.assertIn(b"CODEX OFFICIAL", first.output)
-                first.send(b"\r")
+                first = launch("--native-cli", "resume", thread_id if exercise_agents else "--include-non-interactive")
+                if not exercise_agents:
+                    first.expect(b"SEED_NATIVE", timeout=30)
+                    self.assertIn(b"Select a session to resume", first.output)
+                    self.assertIn(b"Official OpenAI", first.output)
+                    first.send(b"\r")
                 first.expect(b"LOCAL_REPLY_SEED_NATIVE", timeout=30)
+                self.assertIn(b"CODEX OFFICIAL", first.output)
                 wait_writer(first)
             second = launch("resume", thread_id)
             second.expect(b"SEED_NATIVE", timeout=30)
@@ -188,16 +239,39 @@ class RealCliTests(unittest.TestCase):
                 self.assertTrue(writer_busy(home, unrelated_id))
                 self.assertFalse(writer_busy(home, child_id))
                 self.assertEqual(thread_states(home, thread_id), original_states)
+                with sqlite3.connect(database) as connection:
+                    self.assertEqual(connection.execute("SELECT model_provider FROM threads WHERE id=?", (child_id,)).fetchone()[0], "cs_proxy")
+                    self.assertEqual(connection.execute("SELECT model_provider FROM threads WHERE id=?", (archived_id,)).fetchone()[0], "cs_proxy")
+                    self.assertEqual(connection.execute("SELECT model_provider FROM threads WHERE id=?", (unrelated_id,)).fetchone()[0], "openai")
+            phase[0] = "PROXY_CONTINUATION"
             submit(second, "PROXY_CONTINUATION")
             second.expect(b"LOCAL_REPLY_PROXY_CONTINUATION", timeout=30)
+            def wait_child(marker):
+                deadline = time.monotonic() + 15
+                while not any(r["test_thread"] == probe_thread_id and r["test_phase"] == marker
+                              and marker in json.dumps(r.get("input")) for r in requests):
+                    if time.monotonic() > deadline:
+                        self.fail("No real subagent request for " + marker)
+                    time.sleep(0.1)
+            if exercise_agents:
+                wait_child("PROXY_CONTINUATION")
             submit(second, "/exit")
             self.assertEqual(second.process.wait(15), 0)
             self.assertFalse(writer_busy(home, thread_id))
-            third = launch("--native-cli", "resume", thread_id)
+            # Bare official resume must list the thread even though its latest
+            # saved provider is now cs_proxy, then preserve the proxy history.
+            third = launch("--native-cli", "resume", thread_id if exercise_agents else "--include-non-interactive")
+            if not exercise_agents:
+                third.expect(b"Select a session to resume", timeout=30)
+                third.expect(b"cs_proxy", timeout=30)
+                third.send(b"\r")
             third.expect(b"PROXY_CONTINUATION", timeout=30)
             self.assertIn(b"CODEX OFFICIAL", third.output)
+            phase[0] = "OFFICIAL_RETURN"
             submit(third, "OFFICIAL_RETURN")
             third.expect(b"LOCAL_REPLY_OFFICIAL_RETURN", timeout=30)
+            if exercise_agents:
+                wait_child("OFFICIAL_RETURN")
             submit(third, "/exit")
             self.assertEqual(third.process.wait(15), 0)
             self.assertFalse(writer_busy(home, thread_id))
@@ -210,6 +284,16 @@ class RealCliTests(unittest.TestCase):
             self.assertIn("SEED_NATIVE", json.dumps(proxy_request["input"]))
             self.assertIn("PROXY_CONTINUATION", json.dumps(native_request["input"]))
             self.assertIn("LOCAL_REPLY_PROXY_CONTINUATION", json.dumps(native_request["input"]))
+            self.assertFalse(any(item.get("encrypted_content") for item in native_request["input"]))
+            self.assertFalse(any(item.get("encrypted_content") for item in proxy_request["input"]))
+            if exercise_agents:
+                child_requests = [r for r in requests if r["test_thread"] == probe_thread_id]
+                self.assertTrue(child_requests, "The CLI must actually spawn and run a child")
+                for marker, expected_auth in [("PROXY_CONTINUATION", "Bearer synthetic-proxy-only"),
+                                              ("OFFICIAL_RETURN", "Bearer synthetic-local-only")]:
+                    matches = [r for r in child_requests if r["test_phase"] == marker and marker in json.dumps(r.get("input"))]
+                    self.assertTrue(matches, "Missing child continuation: " + marker)
+                    self.assertTrue(all(r["test_authorization"] == expected_auth for r in matches))
             if exercise_tools:
                 outputs = [item for request in requests for item in request.get("input", [])
                            if item.get("type") == "function_call_output" and item.get("call_id") == "call-proxy-tool"]
