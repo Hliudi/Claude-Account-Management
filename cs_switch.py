@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import shutil
 import sqlite3
+import subprocess
 import tempfile
 import uuid
 
@@ -53,19 +54,52 @@ def family(connection, thread_id):
     return {r["id"]: dict(r) for r in connection.execute(query, (thread_id,))}
 
 
+def rollout_file(home, row):
+    """Resolve Codex's logical JSONL path, preferring plain over compressed."""
+    path = Path(row["rollout_path"])
+    if path.name.endswith(".jsonl.zst"):
+        path = path.with_suffix("")
+    if path.suffix != ".jsonl":
+        raise HandoffError(f"Unsupported rollout format for session {row['id']}.")
+    for candidate in (path, Path(str(path) + ".zst")):
+        if candidate.is_symlink() or not candidate.resolve().is_relative_to(home.resolve()):
+            raise HandoffError(f"Unsafe rollout path for session {row['id']}.")
+        if candidate.is_file():
+            return candidate
+    raise HandoffError(f"Missing history for session {row['id']}; neither JSONL nor its compressed copy exists.")
+
+
+def zstd_copy(source, target, decompress=False):
+    binary = shutil.which("zstd")
+    if not binary:
+        raise HandoffError("Compressed Codex history needs the zstd executable; no provider was changed.")
+    with target.open("xb") as out:
+        os.fchmod(out.fileno(), 0o600)
+        result = subprocess.run([binary, "-q", *( ["-d"] if decompress else []), "-c", "--", str(source)],
+                                stdout=out, stderr=subprocess.DEVNULL, timeout=120)
+        if result.returncode:
+            raise HandoffError("Cannot decode/encode compressed history; original history is unchanged.")
+        out.flush()
+        os.fsync(out.fileno())
+
+
 def clear_item(item):
-    """Drop encrypted reasoning replay; preserve all other opaque context verbatim."""
-    changed = 0
+    """Replace provider-bound reasoning items, including their IDs and metadata.
+
+    Clearing only encrypted_content leaves a server item reference behind. Keep
+    the visible summary as ordinary assistant text instead. List positions stay
+    stable for parallel compaction metadata arrays.
+    """
     if not isinstance(item, dict):
         raise HandoffError("Unsupported history item; nothing was migrated.")
-    kind = item.get("type")
-    if item.get("encrypted_content"):
-        if kind == "reasoning":
-            item["encrypted_content"] = None
-            changed += 1
-        # Compaction and encrypted tool/message payloads can be the only
-        # remaining representation of work. Never clear or fabricate those.
-    return changed
+    if item.get("type") != "reasoning":
+        return 0
+    summary = "\n".join(part["text"] for part in item.get("summary", [])
+                        if isinstance(part, dict) and isinstance(part.get("text"), str))
+    item.clear()
+    item.update(type="message", role="assistant", content=[{
+        "type": "output_text", "text": summary or "[Earlier internal reasoning omitted during provider handoff.]"}])
+    return 1
 
 
 def stage_rollout(path, target, thread_id, provider, clear_history, legacy):
@@ -83,7 +117,9 @@ def stage_rollout(path, target, thread_id, provider, clear_history, legacy):
                 payload = record.get("payload", {})
                 kind = record.get("type")
                 changed = False
-                if kind == "session_meta":
+                # Older forks prepend their own metadata to a copied parent
+                # rollout. Only the first metadata record identifies this file.
+                if kind == "session_meta" and not found_meta:
                     if payload.get("id") != thread_id:
                         raise HandoffError("Rollout identity mismatch; nothing was migrated.")
                     found_meta = True
@@ -96,11 +132,12 @@ def stage_rollout(path, target, thread_id, provider, clear_history, legacy):
                     changes += count
                     changed |= bool(count)
                 if clear_history and kind == "compacted":
-                    for item in payload.get("replacement_history") or []:
-                        opaque += opaque_item(item)
-                        count = clear_item(item)
-                        changes += count
-                        changed |= bool(count)
+                    for field in ("replacement_history", "guardian_history"):
+                        for item in payload.get(field) or []:
+                            opaque += opaque_item(item)
+                            count = clear_item(item)
+                            changes += count
+                            changed |= bool(count)
                 if changed:
                     encoded = json.dumps(record, ensure_ascii=False, separators=(",", ":")).encode()
                     # Keeping byte offsets also preserves every projection cache.
@@ -143,7 +180,7 @@ def recover(connection, journal_path, rows, home):
             row = rows[entry["id"]]
             path = Path(entry["path"])
             backup = Path(entry["backup"])
-            if (path.is_symlink() or path.resolve() != Path(row["rollout_path"]).resolve()
+            if (path.is_symlink() or path.resolve() != rollout_file(home, row).resolve()
                     or not path.resolve().is_relative_to(home.resolve())
                     or backup.is_symlink() or not backup.resolve().is_relative_to(journal_path.parent.resolve())
                     or digest(backup) != entry["before_hash"]
@@ -212,16 +249,21 @@ def prepare_resume(binary, home, directory, thread_id, provider, model=None, rep
         backup_dir.mkdir(mode=0o700)
         entries, changed_items, opaque_items = [], 0, 0
         for row in selected:
-            path = Path(row["rollout_path"])
-            if (path.is_symlink() or not path.resolve().is_relative_to(home.resolve())
-                    or path.suffix != ".jsonl" or not path.is_file()):
-                raise HandoffError("Unsupported or compressed rollout; no provider was changed. "
-                                   "Open it with its original provider first, then exit and retry.")
-            backup = backup_dir / (row["id"] + ".jsonl")
+            path = rollout_file(home, row)
+            compressed = path.suffix == ".zst"
+            backup = backup_dir / (row["id"] + (".jsonl.zst" if compressed else ".jsonl"))
             staged = backup_dir / (row["id"] + ".staged")
             private_copy(path, backup)
-            changed, opaque = stage_rollout(backup, staged, row["id"], provider, True,
+            decoded = backup_dir / (row["id"] + ".decoded") if compressed else backup
+            transformed = backup_dir / (row["id"] + ".transformed") if compressed else staged
+            if compressed:
+                zstd_copy(backup, decoded, decompress=True)
+            changed, opaque = stage_rollout(decoded, transformed, row["id"], provider, True,
                                             row.get("history_mode", "legacy") == "legacy")
+            if compressed:
+                zstd_copy(transformed, staged)
+                decoded.unlink()
+                transformed.unlink()
             changed_items += changed
             opaque_items += opaque
             entries.append({"id": row["id"], "path": str(path), "backup": str(backup),

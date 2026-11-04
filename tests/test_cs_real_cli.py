@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -15,6 +16,7 @@ import unittest
 from test_cs_accounts import REPO, Terminal
 from cs_session import writer_busy
 from cs_daemon import DaemonClient, thread_states
+from cs_switch import zstd_copy
 
 
 @unittest.skipUnless(os.environ.get("CS_TEST_CODEX_BIN"), "Set CS_TEST_CODEX_BIN to a real CLI")
@@ -31,7 +33,11 @@ class RealCliTests(unittest.TestCase):
     def test_restored_subagent_requests_follow_provider_in_both_directions(self):
         self.roundtrip(exercise_agents=True)
 
-    def roundtrip(self, shared_daemon=False, exercise_tools=False, exercise_agents=False):
+    @unittest.skipUnless(shutil.which("zstd"), "Compressed history requires zstd")
+    def test_compressed_subagent_switches_and_resumes_with_original_identity(self):
+        self.roundtrip(exercise_agents=True, compressed_child=True)
+
+    def roundtrip(self, shared_daemon=False, exercise_tools=False, exercise_agents=False, compressed_child=False):
         with tempfile.TemporaryDirectory(prefix="cs-real-") as temporary:
             base = Path(temporary)
             home = base / "home"
@@ -41,6 +47,7 @@ class RealCliTests(unittest.TestCase):
             requests = []
             root_request_thread = []
             phase = ["SEED_NATIVE"]
+            reasoning_owners = {}
 
             def has_user_message(request, text):
                 return any(item.get("role") == "user" and any(content.get("text") == text
@@ -71,6 +78,8 @@ class RealCliTests(unittest.TestCase):
                     number = len(requests)
                     expected_cipher = "synthetic-cipher-" + request["test_authorization"]
                     if any(item.get("encrypted_content") not in (None, expected_cipher)
+                           or (item.get("type") == "reasoning" and item.get("id") in reasoning_owners
+                               and reasoning_owners[item["id"]] != request["test_authorization"])
                            for item in request.get("input", [])):
                         data = json.dumps({"error": {"code": "invalid_encrypted_content",
                                                    "message": "Synthetic provider mismatch"}}).encode()
@@ -113,6 +122,7 @@ class RealCliTests(unittest.TestCase):
                     events.insert(1, {"type": "response.output_item.done", "item": {
                         "type": "reasoning", "id": f"rs-{number}", "summary": [],
                         "encrypted_content": expected_cipher}})
+                    reasoning_owners[f"rs-{number}"] = request["test_authorization"]
                     data = "".join(f"event: {event['type']}\ndata: {json.dumps(event)}\n\n" for event in events).encode()
                     self.send_response(200)
                     self.send_header("Content-Type", "text/event-stream")
@@ -162,6 +172,11 @@ class RealCliTests(unittest.TestCase):
                                                   (thread_id,)).fetchall()
                 self.assertEqual(len(children), 1, "Seed must persist exactly one test child")
                 probe_thread_id = children[0][0]
+                if compressed_child:
+                    with sqlite3.connect(next(home.glob("state_*.sqlite"))) as connection:
+                        child_path = Path(connection.execute("SELECT rollout_path FROM threads WHERE id=?", (probe_thread_id,)).fetchone()[0])
+                    zstd_copy(child_path, Path(str(child_path) + ".zst"))
+                    child_path.unlink()
             daemon = None
             client = None
             if shared_daemon:

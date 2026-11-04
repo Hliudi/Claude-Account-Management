@@ -5,6 +5,8 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -70,8 +72,10 @@ class SwitchTests(unittest.TestCase):
             old = [json.loads(x) for x in originals[tid].splitlines()]
             new = [json.loads(x) for x in updated.splitlines()]
             for i in (0, 1, 3, 4): self.assertEqual(old[i], new[i])
-            self.assertIsNone(new[2]['payload']['encrypted_content'])
-            self.assertIsNone(new[5]['payload']['replacement_history'][0]['encrypted_content'])
+            self.assertEqual(new[2]['payload']['type'], 'message')
+            self.assertNotIn('id', new[2]['payload'])
+            self.assertNotIn('encrypted_content', new[2]['payload'])
+            self.assertEqual(new[5]['payload']['replacement_history'][0]['type'], 'message')
             self.assertEqual(self.con.execute('SELECT model_provider FROM threads WHERE id=?', (tid,)).fetchone()[0], 'cs_proxy')
             backup = next(self.directory.glob('provider-backup-*')) / (tid + '.jsonl')
             self.assertEqual(backup.read_bytes(), originals[tid])
@@ -88,12 +92,59 @@ class SwitchTests(unittest.TestCase):
         self.prepare()
         self.assertEqual(json.loads(self.path(self.child).read_bytes().splitlines()[0])['payload']['model_provider'], 'cs_proxy')
 
+    def test_fork_can_contain_inherited_parent_metadata_after_own_header(self):
+        lines = self.path(self.child).read_bytes().splitlines(keepends=True)
+        parent_header = self.path(self.root).read_bytes().splitlines(keepends=True)[0]
+        self.path(self.child).write_bytes(lines[0] + parent_header + b''.join(lines[1:]))
+        self.prepare()
+        updated = self.path(self.child).read_bytes().splitlines(keepends=True)
+        self.assertEqual(updated[1], parent_header)
+
     def test_same_provider_keeps_encrypted_history_until_explicit_repair(self):
         old = self.path(self.root).read_bytes()
         self.prepare('openai')
         self.assertEqual(self.path(self.root).read_bytes(), old)
         self.prepare('openai', repair_history=True)
         self.assertNotIn(b'synthetic-opaque', self.path(self.root).read_bytes())
+
+    def test_guardian_checkpoint_reasoning_ids_and_metadata_are_not_replayed(self):
+        item = {'type': 'reasoning', 'id': 'rs_bad', 'summary': [{'text': 'Visible summary'}],
+                'encrypted_content': 'synthetic-opaque', 'internal_chat_message_metadata_passthrough': {'old': True}}
+        record = {'type': 'compacted', 'payload': {'guardian_history': [item],
+                  'replacement_history': [item], 'replacement_history_metadata': [{'keep': True}]}}
+        with self.path(self.root).open('a') as f: f.write(json.dumps(record) + '\n')
+        self.prepare('openai', repair_history=True)
+        updated = json.loads(self.path(self.root).read_bytes().splitlines()[-1])['payload']
+        for field in ('guardian_history', 'replacement_history'):
+            self.assertEqual(updated[field][0], {'type': 'message', 'role': 'assistant',
+                                              'content': [{'type': 'output_text', 'text': 'Visible summary'}]})
+        self.assertEqual(updated['replacement_history_metadata'], [{'keep': True}])
+
+    @unittest.skipUnless(shutil.which('zstd'), 'zstd executable needed for compressed history')
+    def test_compressed_child_and_explicit_compressed_database_path(self):
+        for tid in (self.child, self.grandchild):
+            plain = self.path(tid)
+            compressed = Path(str(plain) + '.zst')
+            switch.zstd_copy(plain, compressed)
+            plain.unlink()
+        self.con.execute('UPDATE threads SET rollout_path=? WHERE id=?',
+                         (str(self.path(self.grandchild)) + '.zst', self.grandchild))
+        self.con.commit()
+        self.prepare()
+        for tid in (self.child, self.grandchild):
+            data = subprocess.check_output(['zstd', '-q', '-d', '-c', str(self.path(tid)) + '.zst'])
+            self.assertNotIn(b'synthetic-opaque', data)
+            self.assertNotIn(b'rs_synthetic', data)
+            self.assertFalse(self.path(tid).exists())
+            self.assertEqual(self.con.execute('SELECT model_provider FROM threads WHERE id=?', (tid,)).fetchone()[0], 'cs_proxy')
+
+    @unittest.skipUnless(shutil.which('zstd'), 'zstd executable needed for compressed history')
+    def test_corrupt_compressed_history_aborts_before_publication(self):
+        original = self.path(self.root).read_bytes()
+        self.path(self.child).unlink()
+        Path(str(self.path(self.child)) + '.zst').write_bytes(b'corrupt')
+        with self.assertRaises(HandoffError): self.prepare()
+        self.assertEqual(self.path(self.root).read_bytes(), original)
 
     def test_encrypted_only_compaction_is_preserved_without_losing_context(self):
         checkpoint = json.dumps({'type': 'response_item', 'payload': {'type': 'compaction', 'encrypted_content': 'opaque'}}) + '\n'

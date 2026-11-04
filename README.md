@@ -1,6 +1,6 @@
 # Codex Account Manager
 
-Switch Codex providers, continue the same coding session, or keep official accounts in an isolated CLI home. Python 3.11+, standard library only.
+Switch Codex providers, continue the same coding session, or keep official accounts in an isolated CLI home. Python 3.11+, no third-party Python packages. Switching compressed Codex history also uses the `zstd` executable.
 
 [中文说明](README.zh-CN.md) · [Agent instructions](AGENTS.md) · [MIT license](LICENSE)
 
@@ -42,7 +42,7 @@ Managed terminals run without the shared daemon. Taking over an active managed s
 
 Resuming through `cs` or the installed `codex` wrapper switches the saved provider for the whole conversation tree, including existing children and grandchildren. Restored children use the destination's model when their provider changes. `cs use` only selects the account for a future launch; it does not change running terminals. Child work resumes when Codex restores or addresses that child, rather than being automatically reissued by `cs`.
 
-Before a provider change, `cs` releases and checks every writer in that tree, backs up its rollouts privately under `CS_DIR/ownership`, and clears encrypted **reasoning** replay data. Messages, tool calls/results, session IDs, archive states and pagination offsets are retained. This avoids replaying a gateway's reasoning ciphertext with an incompatible item ID at another provider. The model loses the opaque reasoning state; the original remains in the backup. Interrupted changes keep a recovery journal and are recovered on the next managed resume.
+Before a provider change, `cs` releases and checks every writer in that tree, backs up its rollouts privately under `CS_DIR/ownership`, and replaces provider-bound **reasoning** items with ordinary assistant summaries. This removes their ciphertext, server IDs and replay metadata, including copies in compaction and guardian checkpoints. Existing messages, tool calls/results, session IDs, archive states and pagination offsets are retained. The model loses the opaque reasoning state; the original remains in the backup. Compressed `.jsonl.zst` histories are decoded, processed and recompressed without changing their logical byte offsets. Interrupted changes keep a recovery journal and are recovered on the next managed resume.
 
 If a previous switch already left an `invalid_encrypted_content` error, exit the failing terminal and use:
 
@@ -51,7 +51,7 @@ cs native resume --repair-history <session-id>  # repair and return to official 
 cs Krill resume --repair-history <session-id>   # repair using a saved gateway
 ```
 
-Repair covers descendants too and makes no model request itself. Encrypted compaction summaries and encrypted tool/message payloads are preserved because they can be the only record of earlier work. If the destination rejects those as well, return to the original provider to produce a plain-text handoff for a new conversation. Compressed/missing rollouts, unsupported database layouts, a writer that cannot be released, or legacy metadata without room for an offset-preserving provider update stop the launch instead of partially switching accounts. Local mock tests verify routing and replay handling, not every gateway's encrypted payload compatibility.
+Repair covers descendants too and makes no model request itself. Encrypted compaction summaries and encrypted tool/message payloads are preserved because they can be the only record of earlier work. If the destination rejects those as well, return to the original provider to produce a plain-text handoff for a new conversation. Missing/corrupt rollouts, compressed history without an available `zstd` executable, unsupported database layouts, a writer that cannot be released, or legacy metadata without room for an offset-preserving provider update stop the launch instead of partially switching accounts. Local mock tests verify routing and replay handling, not every gateway's encrypted payload compatibility.
 
 For a local shared daemon writer, including an older CLI or App chat, handoff temporarily archives and immediately restores the target session and its descendants through the public lifecycle API. Existing windows can briefly receive archive notifications. Recovery journals preserve original archive states; retry the same command if restoration is interrupted. The daemon and unrelated conversations continue running.
 
